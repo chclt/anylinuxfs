@@ -14,18 +14,12 @@ use std::{
 };
 
 #[cfg(target_os = "macos")]
-use common_utils::FromPath;
-#[cfg(target_os = "macos")]
-use std::{
-    ffi::{CStr, CString},
-    mem,
-    ptr::null_mut,
-};
+use std::{ffi::CStr, mem, ptr::null_mut};
 
 #[derive(Debug, Clone)]
 pub struct MountTable {
     disks: HashSet<OsString>,
-    mount_points: HashSet<OsString>,
+    mount_points: BTreeMap<PathBuf, OsString>,
 }
 
 impl MountTable {
@@ -49,16 +43,16 @@ impl MountTable {
         }
 
         let mut disks = HashSet::new();
-        let mut mount_points = HashSet::new();
-        for buf in mounts_raw {
+        let mut mount_points = BTreeMap::new();
+        for buf in mounts_raw.into_iter().take(res as usize) {
             let StatfsBuf {
                 mntfromname,
                 mntonname,
             } = buf.into();
 
             if !mntfromname.is_empty() && !mntonname.is_empty() {
-                disks.insert(mntfromname);
-                mount_points.insert(mntonname);
+                disks.insert(mntfromname.clone());
+                mount_points.insert(PathBuf::from(mntonname), mntfromname);
             }
         }
         Ok(MountTable {
@@ -72,10 +66,11 @@ impl MountTable {
         let mounts =
             procfs::mounts().map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
         let mut disks = HashSet::new();
-        let mut mount_points = HashSet::new();
+        let mut mount_points = BTreeMap::new();
         for entry in mounts {
-            disks.insert(OsString::from(entry.fs_spec));
-            mount_points.insert(OsString::from(entry.fs_file));
+            let source = OsString::from(entry.fs_spec);
+            disks.insert(source.clone());
+            mount_points.insert(PathBuf::from(entry.fs_file), source);
         }
         Ok(MountTable {
             disks,
@@ -88,8 +83,21 @@ impl MountTable {
         self.disks.contains(path.as_os_str())
     }
 
-    pub fn mount_points(&self) -> impl Iterator<Item = &OsString> {
-        self.mount_points.iter()
+    pub fn mount_points(&self) -> impl Iterator<Item = &Path> {
+        self.mount_points.keys().map(PathBuf::as_path)
+    }
+
+    pub fn mounted_from(&self, path: impl AsRef<Path>) -> io::Result<PathBuf> {
+        let path = path.as_ref();
+        self.mount_points
+            .get(path)
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Path '{}' is not a mount point.", path.display()),
+                )
+            })
     }
 }
 
@@ -151,16 +159,9 @@ impl NfsOptions {
 }
 
 pub fn mounted_from(path: impl AsRef<Path>) -> io::Result<PathBuf> {
-    let buf = statfs(path.as_ref())?;
-
-    if path.as_ref() != buf.mntonname.as_os_str() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("Path '{}' is not a mount point.", path.as_ref().display(),),
-        ));
-    }
-
-    Ok(buf.mntfromname.into())
+    // Use the kernel's mount table: statfs(path) can fail or block when an NFS
+    // filesystem loses its backing device, even though it is still mounted.
+    MountTable::new()?.mounted_from(path)
 }
 
 #[cfg(target_os = "macos")]
@@ -169,6 +170,7 @@ fn os_str_from_c_chars(chars: &[i8]) -> &OsStr {
     OsStr::from_bytes(cstr.to_bytes())
 }
 
+#[cfg(target_os = "macos")]
 struct StatfsBuf {
     mntfromname: OsString,
     mntonname: OsString,
@@ -182,35 +184,6 @@ impl From<libc::statfs> for StatfsBuf {
             mntonname: os_str_from_c_chars(&buf.f_mntonname).to_owned(),
         }
     }
-}
-
-#[cfg(target_os = "macos")]
-fn statfs(path: impl AsRef<Path>) -> io::Result<StatfsBuf> {
-    let c_path = CString::from_path(path.as_ref());
-    let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::statfs(c_path.as_ptr(), &mut buf) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(buf.into())
-}
-
-#[cfg(target_os = "linux")]
-fn statfs(path: impl AsRef<Path>) -> io::Result<StatfsBuf> {
-    let path_str = path.as_ref().to_string_lossy().into_owned();
-    let mounts =
-        procfs::mounts().map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-    for entry in mounts {
-        if entry.fs_file == path_str {
-            return Ok(StatfsBuf {
-                mntfromname: OsString::from(entry.fs_spec),
-                mntonname: OsString::from(entry.fs_file),
-            });
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        format!("'{}' not found in /proc/mounts", path_str),
-    ))
 }
 
 /// Best-effort: if /proc/mounts has an entry for `device`, force-umount it.

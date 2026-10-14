@@ -31,7 +31,7 @@ use crate::privilege::{
 #[cfg(target_os = "linux")]
 use crate::privilege::{EffectiveRootGuard, ElevateOnDrop};
 use crate::settings::{
-    Config, CustomActionEnvironment, KernelPage, MountConfig, PassphrasePromptConfig, Preferences,
+    Config, CustomActionEnvironment, MountConfig, PassphrasePromptConfig, Preferences,
 };
 use crate::utils::{
     self, AcquireLock, CommFd, FlockKind, HasCommFd, HasPtyFd, LockFile, OutputAction,
@@ -194,6 +194,15 @@ fn wait_for_vm_status(pid: libc::pid_t) -> anyhow::Result<Option<i32>> {
     Ok(Some(status))
 }
 
+fn vm_exit_code(wait_status: i32, guest_exit_code: Option<i32>) -> i32 {
+    let exit_code = to_exit_code(wait_status);
+    if exit_code == 0 {
+        guest_exit_code.unwrap_or(0)
+    } else {
+        exit_code
+    }
+}
+
 // when the process isn't a child
 pub(crate) fn wait_for_proc_exit(pid: libc::pid_t) -> anyhow::Result<()> {
     wait_for_proc_exit_with_timeout(pid, Duration::from_secs(5))
@@ -277,10 +286,10 @@ pub(crate) fn validated_mount_point(rt_info: &api::RuntimeInfo) -> MountStatus<'
         }
 
         _ => {
-            let share_name = match rt_info.mount_config.custom_mount_name() {
-                Some(name) => name.as_bytes().into(),
-                None => rt_info.dev_info.auto_mount_name(),
-            };
+            let share_name = rt_info
+                .mount_config
+                .source_mount_name()
+                .unwrap_or_else(|| rt_info.dev_info.auto_mount_name());
             [b"/mnt/", share_name.as_slice()].concat().into()
         }
     };
@@ -544,13 +553,6 @@ pub(crate) fn claim_devices(
         mnt_dev_info.set_fs_driver(&fs_driver);
     };
 
-    if config.kernel_page_size == Some(KernelPage::Size4K)
-        || (mnt_dev_info.fs_type() == Some("f2fs") && mnt_dev_info.block_size() == Some(4096))
-    {
-        host_println!("using 4K-page kernel");
-        config.common.kernel.path = config.common.kernel.path.parent().unwrap().join("Image-4K");
-    }
-
     if !mnt_dev_info.media_writable() && !config.read_only {
         config.read_only = true;
     }
@@ -732,6 +734,9 @@ pub(crate) fn cleanup_old_logs<'a>(
                                 log_dir.join(format!("anylinuxfs_nethelper{}.log", id_part));
                             let _ = fs::remove_file(&kernel_log);
                             let _ = fs::remove_file(&nethelper_log);
+                            let _ = fs::remove_file(
+                                log_dir.join(format!("anylinuxfs_usb{}.log", id_part)),
+                            );
                         }
                     }
                 }
@@ -1028,10 +1033,9 @@ impl<'a> NfsShareSetup<'a> {
         mnt_dev_info: &DevInfo,
         shared_volume: bool,
     ) -> Self {
-        let share_name = match config.custom_mount_name() {
-            Some(name) => name.as_bytes().into(),
-            None => mnt_dev_info.auto_mount_name(),
-        };
+        let share_name = config
+            .source_mount_name()
+            .unwrap_or_else(|| mnt_dev_info.auto_mount_name());
 
         let share_path = match config.get_action() {
             Some(action) if !action.override_nfs_export().is_empty() => {
@@ -1043,6 +1047,17 @@ impl<'a> NfsShareSetup<'a> {
         let mut nfs_opts = fsutil::NfsOptions::default();
         if shared_volume {
             nfs_opts.remove(fsutil::LOCAL_LOCK_KEY.as_bytes());
+        }
+        #[cfg(target_os = "macos")]
+        if config.mtp_device().is_some() {
+            // jmtpfs downloads the entire file before replying to the first read.
+            // Keep soft, interruptible requests without declaring that cache fill
+            // a dead server. User-specified NFS options still take precedence.
+            nfs_opts.extend([
+                (b"deadtimeout".into(), b"0".into()),
+                (b"timeo".into(), b"600".into()),
+                (b"retrans".into(), b"100".into()),
+            ]);
         }
         nfs_opts.extend(config.nfs_options.iter().map(|s| match s.split_once('=') {
             Some((key, value)) => (key.as_bytes().into(), value.as_bytes().into()),
@@ -1497,7 +1512,11 @@ impl super::AppRunner {
         let mut guard = lock_file.acquire_lock(FlockKind::Shared)?;
 
         #[allow(unused_mut)]
-        let (mut dev_info, mut mnt_dev_info, _disks) = claim_devices(&mut config)?;
+        let (mut dev_info, mut mnt_dev_info, _disks) = if config.mtp_device().is_some() {
+            (vec![], DevInfo::default(), vec![])
+        } else {
+            claim_devices(&mut config)?
+        };
 
         #[allow(unused_mut)]
         let mut opts = VMOpts::new()
@@ -1521,7 +1540,11 @@ impl super::AppRunner {
             // A user-supplied driver selects the guest OS when host metadata is
             // unavailable (notably for unprobed qcow2 images).
             let mount_os = select_mount_os(
-                config.os,
+                if config.mtp_device().is_some() {
+                    Some(OSType::Linux)
+                } else {
+                    config.os
+                },
                 config.get_action().and_then(|action| action.required_os()),
                 config.fs_driver.as_deref(),
                 mnt_dev_info.fs_type(),
@@ -1610,7 +1633,18 @@ impl super::AppRunner {
             can_detach = false;
         }
 
+        crate::vm::prepare_kernel(&mut config, &mnt_dev_info)?;
         let os = config.common.kernel.os;
+        if let Some(mtp) = &config.mtp {
+            crate::mtp::prepare_cache(&config.common, mtp, &mut deferred)?;
+            opts = opts.shared_dir(common_utils::MTP_CACHE_TAG, mtp.cache_path.clone());
+        }
+        let usbproxy_pid = config
+            .usb
+            .as_ref()
+            .map(|usb| crate::usb::start(&config.common, usb, &mut deferred))
+            .transpose()?;
+        opts = opts.usb_socket(config.usb.as_ref().map(|usb| usb.socket_path.clone()));
         let shared_volume = config.bind_addr.is_some_and(|addr| !addr.is_loopback());
 
         let effective_net_helper = config
@@ -1763,6 +1797,7 @@ impl super::AppRunner {
                 session_pgid,
                 vmm_pid: child_pid,
                 net_helper_pid,
+                usbproxy_pid,
                 vm_host: vm_host_b.to_vec(),
                 vm_native_ip,
                 mount_point: None,
@@ -1953,7 +1988,11 @@ impl super::AppRunner {
                 deferred.call_now(disable_stdin_fwd_action);
 
                 if let Some(mount_point) = &mount_point_opt {
-                    let mut disk: String = mnt_dev_info.disk().display().to_string();
+                    let mut disk: String = if config.mtp_device().is_some() {
+                        config.disk_path.clone()
+                    } else {
+                        mnt_dev_info.disk().display().to_string()
+                    };
                     if disk.is_empty() {
                         disk = "<unknown>".into();
                     }
@@ -2023,15 +2062,14 @@ impl super::AppRunner {
             }
 
             deferred.remove(vm_wait_action);
-            if let Some(mut status) = wait_for_vm_status(child_pid)? {
-                if status == 0 {
-                    if let NfsStatus::Failed(Some(exit_code)) = nfs_status {
-                        status = exit_code;
-                    }
-                }
-
-                if status != 0 {
-                    return Err(StatusError::new("VM exited with status", status).into());
+            if let Some(status) = wait_for_vm_status(child_pid)? {
+                let guest_exit_code = match nfs_status {
+                    NfsStatus::Failed(exit_code) => Some(exit_code.unwrap_or(1)),
+                    _ => None,
+                };
+                let exit_code = vm_exit_code(status, guest_exit_code);
+                if exit_code != 0 {
+                    return Err(crate::RemoteExit(exit_code).into());
                 }
             }
         }

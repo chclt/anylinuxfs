@@ -26,6 +26,8 @@ pub struct RuntimeInfo {
     pub session_pgid: libc::pid_t,
     pub vmm_pid: libc::pid_t,
     pub net_helper_pid: libc::pid_t,
+    #[serde(default)]
+    pub usbproxy_pid: Option<libc::pid_t>,
     pub vm_host: Vec<u8>,
     pub vm_native_ip: Option<Ipv4Addr>,
     pub mount_point: Option<String>,

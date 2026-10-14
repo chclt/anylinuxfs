@@ -108,11 +108,11 @@ pub(crate) struct DebugArgs {
 pub(crate) struct DiskIdentArg {
     #[cfg_attr(
         target_os = "macos",
-        doc = "File path(s), LVM identifier or RAID identifier, e.g.:\n/dev/diskXsY[:/dev/diskYsZ:...]\npath/to/disk.img@s1[:path/to/image.qcow2@s2:...]\nlvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>\nlvm:<vg-name>:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]:<lv-name>\nraid:diskXsY[:diskYsZ:...]\nraid:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]\n(see `list` command output for available volumes)"
+        doc = "File path(s), LVM, RAID or experimental MTP identifier, e.g.:\n/dev/diskXsY[:/dev/diskYsZ:...]\npath/to/disk.img@s1[:path/to/image.qcow2@s2:...]\nlvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>\nlvm:<vg-name>:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]:<lv-name>\nraid:diskXsY[:diskYsZ:...]\nraid:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]\nmtp:<USB bus ID from `list --usb`> (read-only)\n(see `list` command output for available volumes)"
     )]
     #[cfg_attr(
         target_os = "linux",
-        doc = "File path(s), LVM identifier or RAID identifier, e.g.:\n/dev/sdXN[:/dev/sdYM:...]\n/dev/nvmeXnYpZ[:/dev/nvmeAnBpC:...]\npath/to/disk.img@s1[:path/to/image.qcow2@s2:...]\nlvm:<vg-name>:/dev/sdXN[:/dev/sdYM:...]:<lv-name>\nlvm:<vg-name>:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]:<lv-name>\nraid:/dev/sdXN[:/dev/sdYM:...]\nraid:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]\n(see `list` command output for available volumes)"
+        doc = "File path(s), LVM, RAID or experimental MTP identifier, e.g.:\n/dev/sdXN[:/dev/sdYM:...]\n/dev/nvmeXnYpZ[:/dev/nvmeAnBpC:...]\npath/to/disk.img@s1[:path/to/image.qcow2@s2:...]\nlvm:<vg-name>:/dev/sdXN[:/dev/sdYM:...]:<lv-name>\nlvm:<vg-name>:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]:<lv-name>\nraid:/dev/sdXN[:/dev/sdYM:...]\nraid:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]\nmtp:<USB bus ID from `list --usb`> (read-only)\n(see `list` command output for available volumes)"
     )]
     #[clap(verbatim_doc_comment)]
     pub disk_ident: Option<String>,
@@ -122,6 +122,9 @@ pub(crate) struct DiskIdentArg {
 pub(crate) struct MountCmd {
     #[command(flatten)]
     pub d: DiskIdentArg,
+    /// Forward this USB bus ID to the Linux guest (experimental; does not mount MTP).
+    #[arg(long, value_name = "BUS_ID")]
+    pub usb_device: Option<String>,
     #[cfg_attr(
         target_os = "macos",
         doc = "Custom mount path to override the default under /Volumes"
@@ -224,6 +227,9 @@ pub(crate) struct ConfigCmd {
         .args(&["linux", "microsoft"]),
 ))]
 pub(crate) struct ListCmd {
+    /// List host USB devices without initializing a VM.
+    #[arg(long, conflicts_with_all = ["disk", "decrypt", "linux", "microsoft"])]
+    pub usb: bool,
     /// List only the specified disk(s) or image(s), delimited by space
     #[arg(value_name = "DISK|IMAGE", value_delimiter = ' ', num_args = 0..)]
     pub disk: Option<Vec<String>>,
@@ -283,6 +289,9 @@ pub(crate) struct VmExecCmd {
 
 #[derive(Args, Clone)]
 pub(crate) struct ShellCmd {
+    /// Forward this USB bus ID to the Linux guest (experimental).
+    #[arg(long, value_name = "BUS_ID")]
+    pub usb_device: Option<String>,
     /// Command to run in the shell
     #[arg(short, long)]
     pub command: Option<String>,
@@ -314,6 +323,7 @@ impl From<ShellCmd> for MountCmd {
     fn from(shell_cmd: ShellCmd) -> Self {
         MountCmd {
             d: shell_cmd.d,
+            usb_device: shell_cmd.usb_device,
             mount_point: None,
             options: None,
             nfs_options: None,

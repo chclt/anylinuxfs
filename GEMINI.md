@@ -138,6 +138,8 @@ cd freebsd-bootstrap && CGO_ENABLED=0 GOOS=freebsd GOARCH=arm64 \
 | `rpcbind.rs` | RPC service registration via macOS `oncrpc` framework |
 | `bindings.rs` | FFI bindings to libkrun C API (`krun_create_ctx`, `krun_start_enter`, etc.) |
 | `utils.rs` | Process management, PTY, signal handling, `ForkOutput`, `StatusError` |
+| `usb.rs` | Generic USB forwarding helper lifecycle |
+| `mtp.rs` | Host cache resources for MTP mounts |
 
 ## Security Model
 
@@ -227,3 +229,9 @@ Whenever the assistant performs repository-related work — including answering 
 - If Context7 fails or returns no match, clearly state the fallback (web search or canonical docs) and continue.
 
 Adding this guidance at the repository level ensures Copilot Chat follows Context7-first behavior for library-related reasoning and code generation across devices that open this workspace.
+
+## MTP 实机观察（2026-10-13）
+
+- 用户报告约 22:33:20（Asia/Shanghai）出现 macOS 的 `Server connections interrupted` 弹窗，列出的卷名为 `mount`，按钮为 `Ignore` 和 `Disconnect All`。
+- 用户此前也见过类似提示，可能发生在卸载时；此次触发原因未确认。记录为观察现象，不单凭该弹窗认定异常或要求修复，应结合当时的读取、NFS 状态和卸载日志判断。
+- 随后的大文件测试再次出现该弹窗，用户选择了“忽略”。用户报告这台手机 USB 2 的实测读取速度保守可达 25 MB/s；当时转发约 2.5 MiB/s，应定位转发瓶颈，不能将延长 NFS 等待当作速度修复。

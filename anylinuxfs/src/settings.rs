@@ -52,6 +52,8 @@ pub struct LogPaths {
     pub log_file_path: PathBuf,
     pub kernel_log_file_path: PathBuf,
     pub nethelper_log_path: PathBuf,
+    #[serde(default)]
+    pub usbproxy_log_path: PathBuf,
 }
 
 /// Network helper configuration and per-run socket paths.
@@ -847,6 +849,35 @@ pub enum KernelPage {
     Size16K,
 }
 
+pub(crate) fn parse_mtp_device(ident: &str) -> anyhow::Result<Option<&str>> {
+    let Some(device) = ident.strip_prefix("mtp:") else {
+        return Ok(None);
+    };
+    let (bus, address) = device
+        .split_once('-')
+        .context("Use mtp:BUS_ID from list --usb")?;
+    bus.parse::<u8>().context("Invalid MTP USB bus number")?;
+    let address = address
+        .parse::<u8>()
+        .context("Invalid MTP USB device address")?;
+    if address == 0 || address > 127 {
+        anyhow::bail!("Invalid MTP USB device address: {address}");
+    }
+    Ok(Some(device))
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct UsbConfig {
+    pub device: String,
+    pub socket_path: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MtpConfig {
+    pub device: String,
+    pub cache_path: PathBuf,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct MountConfig {
     pub disk_path: String,
@@ -871,9 +902,26 @@ pub struct MountConfig {
     pub common: Config,
     pub custom_action: Option<String>,
     pub key_file: Option<PathBuf>,
+    #[serde(default)]
+    pub usb: Option<UsbConfig>,
+    #[serde(default)]
+    pub mtp: Option<MtpConfig>,
 }
 
 impl MountConfig {
+    pub fn mtp_device(&self) -> Option<&str> {
+        self.mtp.as_ref().map(|mtp| mtp.device.as_str())
+    }
+
+    pub fn source_mount_name(&self) -> Option<BString> {
+        self.custom_mount_name()
+            .map(|name| name.as_bytes().into())
+            .or_else(|| {
+                self.mtp_device()
+                    .map(|device| format!("MTP-{device}").into())
+            })
+    }
+
     pub fn get_action(&self) -> Option<&CustomActionConfig> {
         match self.custom_action.as_deref() {
             Some(action_name) => self
