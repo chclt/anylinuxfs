@@ -33,12 +33,14 @@ mod devinfo;
 mod diskutil;
 mod fsutil;
 mod mdns;
+mod mtp;
 mod netutil;
 mod privilege;
 mod pubsub;
 mod rpcbind;
 mod settings;
 mod telnet;
+mod usb;
 mod utils;
 mod vm;
 mod vm_image;
@@ -221,6 +223,7 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
     let log_file_path = log_dir.join(format!("anylinuxfs-{}.log", log_file_id));
     let kernel_log_file_path = log_dir.join(format!("anylinuxfs_kernel-{}.log", log_file_id));
     let nethelper_log_path = log_dir.join(format!("anylinuxfs_nethelper-{}.log", log_file_id));
+    let usbproxy_log_path = log_dir.join(format!("anylinuxfs_usb-{}.log", log_file_id));
 
     let libexec_path = prefix_dir.join("libexec");
     let init_rootfs_path = libexec_path.join("init-rootfs").to_owned();
@@ -295,6 +298,7 @@ fn load_config(common_args: &CommonArgs, debug_args: &DebugArgs) -> anyhow::Resu
             log_file_path,
             kernel_log_file_path,
             nethelper_log_path,
+            usbproxy_log_path,
         },
         network: NetworkConfig {
             gvproxy_net_sock_path,
@@ -325,10 +329,58 @@ pub(crate) fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
     let common = load_config(&cmd.common, &cmd.debug)?;
 
     let disk_path = cmd.disk_ident();
-    let mount_options = cmd.options;
+    let mtp_device = settings::parse_mtp_device(&disk_path)?.map(str::to_owned);
+    let key_file = cmd
+        .key_file
+        .clone()
+        .or_else(|| env::var("ALFS_KEY_FILE").ok())
+        .map(PathBuf::from);
+    if mtp_device.is_some() {
+        if cmd.usb_device.is_some()
+            || cmd.fs_driver.is_some()
+            || cmd.action.is_some()
+            || key_file.is_some()
+            || cmd.remount
+        {
+            anyhow::bail!(
+                "MTP cannot be combined with USB forwarding, disk drivers, custom actions, key files or remount"
+            );
+        }
+        #[cfg(feature = "freebsd")]
+        if cmd.os == Some(OSType::FreeBSD) {
+            anyhow::bail!("MTP requires a Linux guest");
+        }
+        if cmd
+            .options
+            .as_deref()
+            .is_some_and(|opts| opts.split(',').any(|opt| opt != "ro"))
+        {
+            anyhow::bail!("MTP currently accepts only the ro mount option");
+        }
+    }
+    let mount_options = if mtp_device.is_some() {
+        Some("ro".to_owned())
+    } else {
+        cmd.options
+    };
 
     let mut nfs_options = cmd.nfs_options.unwrap_or_default();
-    let nfs_export_opts = cmd.nfs_export_opts;
+    let nfs_export_opts = if mtp_device.is_some() {
+        nfs_options.retain(|option| !matches!(option.split('=').next(), Some("rw" | "ro")));
+        nfs_options.push("ro".into());
+        cmd.nfs_export_opts.map(|options| {
+            std::iter::once("ro")
+                .chain(
+                    options
+                        .split(',')
+                        .filter(|option| !matches!(*option, "ro" | "rw" | "")),
+                )
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+    } else {
+        cmd.nfs_export_opts
+    };
     let ignore_permissions = cmd.ignore_permissions;
     if ignore_permissions && !nfs_options.iter().any(|o| o == "noowners") {
         nfs_options.push("noowners".to_owned());
@@ -400,11 +452,7 @@ pub(crate) fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         None
     };
 
-    let key_file = cmd
-        .key_file
-        .clone()
-        .or_else(|| env::var("ALFS_KEY_FILE").ok())
-        .map(PathBuf::from)
+    let key_file = key_file
         .map(|key_path| {
             if !key_path.exists() {
                 anyhow::bail!("Key file not found: {}", key_path.display());
@@ -420,6 +468,19 @@ pub(crate) fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
     let assemble_raid = false;
 
     let vm_hostname: String = hostname_from_disk_ident(&disk_path)?;
+    let usb = mtp_device
+        .clone()
+        .or(cmd.usb_device)
+        .map(|device| settings::UsbConfig {
+            device,
+            // Keep this distinct from the discoverable runtime API *.sock files.
+            socket_path: PathBuf::from(format!("/tmp/anylinuxfs-usb-{}", rand_string(8))),
+        });
+
+    let mtp = mtp_device.map(|device| settings::MtpConfig {
+        device,
+        cache_path: PathBuf::from(format!("/tmp/anylinuxfs-mtp-{}", rand_string(8))),
+    });
 
     Ok(MountConfig {
         disk_path,
@@ -443,11 +504,13 @@ pub(crate) fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         common,
         custom_action,
         key_file,
+        usb,
+        mtp,
     })
 }
 
 pub(crate) fn hostname_from_disk_ident(disk_ident: &str) -> anyhow::Result<String> {
-    let special = ["lvm", "raid"];
+    let special = ["lvm", "raid", "mtp"];
 
     let mut ident_iter = disk_ident.split(':');
     let mut first_token = ident_iter.next().unwrap();
@@ -521,6 +584,11 @@ impl Default for AppRunner {
 impl AppRunner {
     fn run_shell(&mut self, cmd: ShellCmd) -> anyhow::Result<()> {
         let config = load_mount_config(cmd.clone().into())?;
+        if config.mtp_device().is_some() {
+            anyhow::bail!(
+                "Use mount mtp:BUS_ID for MTP, or shell --usb-device BUS_ID for USB debugging"
+            );
+        }
         let lock_kind = match config.common.rw_rootfs {
             // Upgrade to exclusive lock for mutable operations on rootfs
             true => FlockKind::Exclusive,
@@ -589,7 +657,8 @@ impl AppRunner {
         );
 
         #[allow(unused_mut)]
-        let (mut dev_info, _, _disks) = claim_devices(&mut config)?;
+        let (mut dev_info, mnt_dev_info, _disks) = claim_devices(&mut config)?;
+        prepare_kernel(&mut config, &mnt_dev_info)?;
 
         #[allow(unused_mut)]
         let mut opts = VMOpts::new()
@@ -613,6 +682,11 @@ impl AppRunner {
         }
 
         let effective_net_helper = config.common.network.effective_net_helper(|h| h);
+        let mut deferred = common_utils::Deferred::new();
+        if let Some(usb) = &config.usb {
+            usb::start(&config.common, usb, &mut deferred)?;
+        }
+        opts = opts.usb_socket(config.usb.as_ref().map(|usb| usb.socket_path.clone()));
 
         let net_mode = match cmd.no_tsi || os != OSType::Linux {
             true => NetworkMode::default_virtio_net(effective_net_helper),
@@ -641,14 +715,34 @@ impl AppRunner {
         }
 
         if os == OSType::Linux && !cmd.no_tsi {
-            start_vm(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
-        } else {
-            vm_image::setup_net_helper(&config.common, effective_net_helper, |vm_native_cidr| {
-                if let Some(cidr) = vm_native_cidr {
-                    cmdline.extend(["-n".into(), cidr.to_string().into()]);
+            if config.usb.is_some() {
+                let status = start_vm_forked_managed(&ctx, &cmdline, &vm_env)
+                    .context("Failed to start microVM shell")?;
+                if status != 0 {
+                    return Err(RemoteExit(status).into());
                 }
-                start_vm_forked(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")
-            })?;
+            } else {
+                start_vm(&ctx, &cmdline, &vm_env).context("Failed to start microVM shell")?;
+            }
+        } else {
+            let status = vm_image::setup_net_helper(
+                &config.common,
+                effective_net_helper,
+                |vm_native_cidr| {
+                    if let Some(cidr) = vm_native_cidr {
+                        cmdline.extend(["-n".into(), cidr.to_string().into()]);
+                    }
+                    if config.usb.is_some() {
+                        start_vm_forked_managed(&ctx, &cmdline, &vm_env)
+                    } else {
+                        start_vm_forked(&ctx, &cmdline, &vm_env)
+                    }
+                    .context("Failed to start microVM shell")
+                },
+            )?;
+            if config.usb.is_some() && status != 0 {
+                return Err(RemoteExit(status).into());
+            }
         }
 
         Ok(())
@@ -940,6 +1034,10 @@ impl AppRunner {
     }
 
     fn run_list(&mut self, cmd: ListCmd) -> anyhow::Result<()> {
+        if cmd.usb {
+            let config = load_config(&cmd.common, &cmd.debug)?;
+            return usb::list(&config);
+        }
         let mut lock_file = LockFile::new(LOCK_FILE)?;
         let mut guard = lock_file.acquire_lock(FlockKind::Shared)?;
         let mut config = load_config(&cmd.common, &cmd.debug)?;
@@ -1210,6 +1308,11 @@ impl AppRunner {
                         println!("gvproxy exited gracefully");
                     }
                 }
+                if let Some(pid) = rt_info.usbproxy_pid
+                    && unsafe { libc::kill(pid, libc::SIGTERM) } == 0
+                {
+                    _ = wait_for_proc_exit(pid);
+                }
                 if unsafe { libc::killpg(rt_info.session_pgid, libc::SIGKILL) } < 0 {
                     let last_error = io::Error::last_os_error();
                     if last_error.raw_os_error().unwrap() != libc::ESRCH {
@@ -1221,6 +1324,14 @@ impl AppRunner {
                 _ = vm_network::vfkit_sock_cleanup(
                     &rt_info.mount_config.common.network.unixgram_sock_path,
                 );
+                if let Some(usb) = &rt_info.mount_config.usb {
+                    _ = usb::cleanup_socket(&usb.socket_path);
+                }
+                if let Some(mtp) = &rt_info.mount_config.mtp {
+                    wait_for_proc_exit(rt_info.vmm_pid)
+                        .context("Wait for VM before removing MTP cache")?;
+                    _ = fs::remove_dir_all(&mtp.cache_path);
+                }
                 return Ok(());
             }
         }

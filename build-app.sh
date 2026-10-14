@@ -60,6 +60,11 @@ if [[ "$HOST_OS" == "Darwin" ]]; then
     codesign --entitlements "anylinuxfs.entitlements" --force -s - bin/anylinuxfs
 fi
 
+(cd "usbproxy" && cargo build $BUILD_ARGS)
+mkdir -p libexec && cp "usbproxy/target/$BUILD_DIR/usbproxy" libexec/
+mkdir -p libexec/licenses/usbproxy
+cp usbproxy/LICENSE-* libexec/licenses/usbproxy/
+
 (cd "vmproxy" && "${VMPROXY_LINUX_RUSTFLAGS_ENV[@]}" cargo build "${VMPROXY_LINUX_LINKER_CFG[@]}" $BUILD_ARGS $FEATURE_ARG)
 mkdir -p libexec && cp "vmproxy/target/aarch64-unknown-linux-musl/$BUILD_DIR/vmproxy" libexec/
 

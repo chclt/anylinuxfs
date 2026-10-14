@@ -16,6 +16,9 @@ fi
 # Unit tests are generally run on the host architecture even for cross-compiled projects
 # to verify logic and algorithms, unless they contain platform-specific assembly or syscalls.
 
+echo "=== Running tests for usbproxy ==="
+(cd usbproxy && cargo test)
+
 echo "=== Running tests for common-utils ==="
 (cd common-utils && cargo test $FEATURE_ARG)
 

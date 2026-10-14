@@ -12,7 +12,6 @@ use std::ffi::CString;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::null;
 use std::sync::Once;
@@ -32,6 +31,8 @@ pub(crate) struct VMOpts {
     read_only_disk_prefix_len: usize,
     root_device: Option<String>,
     read_only_root: bool,
+    usb_socket: Option<PathBuf>,
+    shared_dirs: Vec<(&'static std::ffi::CStr, PathBuf)>,
     #[cfg(feature = "freebsd")]
     legacy_console: bool,
 }
@@ -43,6 +44,8 @@ impl VMOpts {
             read_only_disk_prefix_len: 0,
             root_device: None,
             read_only_root: true,
+            usb_socket: None,
+            shared_dirs: vec![],
             #[cfg(feature = "freebsd")]
             legacy_console: false,
         }
@@ -60,6 +63,16 @@ impl VMOpts {
 
     pub(crate) fn read_only_root(mut self, value: bool) -> Self {
         self.read_only_root = value;
+        self
+    }
+
+    pub(crate) fn shared_dir(mut self, tag: &'static std::ffi::CStr, path: PathBuf) -> Self {
+        self.shared_dirs.push((tag, path));
+        self
+    }
+
+    pub(crate) fn usb_socket(mut self, socket: Option<PathBuf>) -> Self {
+        self.usb_socket = socket;
         self
     }
 
@@ -183,6 +196,16 @@ pub(crate) fn setup_vm(
         .context("Failed to set root")?;
     }
 
+    for (tag, path) in &opts.shared_dirs {
+        unsafe {
+            bindings::krun_add_virtiofs(ctx_id, tag.as_ptr(), CString::from_path(path).as_ptr())
+        }
+        .context(&format!(
+            "Failed to add shared directory {}",
+            tag.to_string_lossy()
+        ))?;
+    }
+
     for (i, di) in dev_info.iter().enumerate() {
         let read_only = opts.add_disks_ro || i < opts.read_only_disk_prefix_len;
         unsafe {
@@ -248,6 +271,18 @@ pub(crate) fn setup_vm(
             )
         }
         .context("Failed to add vsock port")?;
+    }
+
+    if let Some(socket) = &opts.usb_socket {
+        unsafe {
+            bindings::krun_add_vsock_port2(
+                ctx_id,
+                common_utils::USBIP_VSOCK_PORT,
+                CString::from_path(socket).as_ptr(),
+                false,
+            )
+        }
+        .context("Failed to map USB forwarding socket to VM")?;
     }
 
     unsafe { bindings::krun_set_workdir(ctx_id, c"/".as_ptr()) }
@@ -444,10 +479,9 @@ pub(crate) fn start_vmproxy(
     }
     .into();
 
-    let mount_name = match config.custom_mount_name() {
-        Some(name) => name.as_bytes().into(),
-        None => dev_info.auto_mount_name(),
-    };
+    let mount_name = config
+        .source_mount_name()
+        .unwrap_or_else(|| dev_info.auto_mount_name());
 
     let custom_mount_point = config.custom_mount_point.is_some();
     let assemble_raid = config.assemble_raid;
@@ -471,6 +505,12 @@ pub(crate) fn start_vmproxy(
         Vec::from_iter(bind_addrs).join(",").into(),
     ]
     .into_iter()
+    .chain(
+        config
+            .mtp_device()
+            .into_iter()
+            .flat_map(|device| ["--mtp-device".into(), device.into()]),
+    )
     .chain(custom_mount_point.then_some("-c".into()).into_iter())
     .chain(
         ctx.vm_native_cidr
@@ -667,20 +707,78 @@ pub(crate) fn start_vm_forked(
     cmdline: &[BString],
     env: &[BString],
 ) -> anyhow::Result<i32> {
+    start_vm_forked_impl(ctx, cmdline, env, false)
+}
+
+/// Keep a supervising parent alive to unwind helper cleanup on termination.
+/// Register signals after the fork so the VMM does not inherit our publisher.
+pub(crate) fn start_vm_forked_managed(
+    ctx: &VMContext,
+    cmdline: &[BString],
+    env: &[BString],
+) -> anyhow::Result<i32> {
+    start_vm_forked_impl(ctx, cmdline, env, true)
+}
+
+fn start_vm_forked_impl(
+    ctx: &VMContext,
+    cmdline: &[BString],
+    env: &[BString],
+    managed: bool,
+) -> anyhow::Result<i32> {
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         return Err(io::Error::last_os_error()).context("Failed to fork process");
     } else if pid == 0 {
-        // Child process
         start_vm(ctx, cmdline, env)?;
         unreachable!();
-    } else {
-        // Parent process
-        let mut status = 0;
-        if unsafe { libc::waitpid(pid, &mut status, 0) } < 0 {
-            return Err(io::Error::last_os_error()).context("Failed to wait for child process");
+    }
+    if !managed {
+        return wait_for_forked_vm(pid);
+    }
+
+    let mut cleanup = Deferred::new();
+    cleanup.add(|| {
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
         }
-        return Ok(to_exit_code(status));
+        _ = wait_for_forked_vm(pid);
+    });
+    let hub = utils::start_signal_publisher()?;
+    let signals = hub.subscribe();
+    let id = signals.id();
+    let result = std::thread::scope(|scope| {
+        let mut unsubscribe = Deferred::new();
+        unsubscribe.add(|| {
+            if let Some(id) = id {
+                hub.unsubscribe(id);
+            }
+        });
+        scope.spawn(move || {
+            for signal in signals {
+                unsafe {
+                    libc::kill(pid, signal);
+                }
+            }
+        });
+        wait_for_forked_vm(pid)
+    });
+    if result.is_ok() {
+        cleanup.remove_all();
+    }
+    result
+}
+
+fn wait_for_forked_vm(pid: libc::pid_t) -> anyhow::Result<i32> {
+    let mut status = 0;
+    loop {
+        if unsafe { libc::waitpid(pid, &mut status, 0) } >= 0 {
+            return Ok(to_exit_code(status));
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error).context("Failed to wait for child process");
+        }
     }
 }
 
@@ -771,4 +869,30 @@ pub(crate) fn run_vmcommand_short(
             stderr,
         });
     }
+}
+
+/// Resolve the Linux kernel once, after OS and filesystem metadata are known.
+pub(crate) fn prepare_kernel(config: &mut MountConfig, device: &DevInfo) -> anyhow::Result<()> {
+    if config.common.kernel.os != OSType::Linux {
+        if config.usb.is_some() {
+            anyhow::bail!("USB forwarding requires a Linux guest");
+        }
+        return Ok(());
+    }
+    let page_4k = config.kernel_page_size == Some(crate::settings::KernelPage::Size4K)
+        || (device.fs_type() == Some("f2fs") && device.block_size() == Some(4096));
+    let kernel = match (config.usb.is_some(), page_4k) {
+        (false, false) => "Image",
+        (false, true) => "Image-4K",
+        (true, false) => "Image-usbip",
+        (true, true) => "Image-usbip-4K",
+    };
+    config.common.kernel.path = config.common.paths.libexec_path.join(kernel);
+    if config.usb.is_some() && !config.common.kernel.path.is_file() {
+        anyhow::bail!(
+            "USB forwarding requires the USB/IP-enabled kernel {}; see docs/building.md",
+            config.common.kernel.path.display()
+        );
+    }
+    Ok(())
 }

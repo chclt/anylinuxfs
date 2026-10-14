@@ -2,8 +2,6 @@ use anyhow::Context;
 use base64::{Engine, engine::general_purpose::STANDARD_NO_PAD};
 use bstr::{BString, ByteSlice};
 use clap::Parser;
-#[cfg(target_os = "linux")]
-use common_utils::FromPath;
 #[cfg(any(target_os = "freebsd", target_os = "macos"))]
 use common_utils::VM_CTRL_PORT;
 #[cfg(any(target_os = "freebsd", target_os = "linux"))]
@@ -15,8 +13,6 @@ use ipnet::Ipv4Net;
 use libc::VMADDR_CID_ANY;
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
-#[cfg(target_os = "linux")]
-use std::ffi::CString;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -25,7 +21,9 @@ use std::net::IpAddr;
 use std::net::TcpListener;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -39,7 +37,11 @@ use vsock::{VsockAddr, VsockListener};
 use crate::utils::{script, script_output};
 
 mod kernel_cfg;
+mod mtp;
+mod nfs;
 mod telnet_session;
+#[cfg(any(target_os = "linux", test))]
+mod usbip;
 mod utils;
 mod zfs;
 
@@ -62,6 +64,8 @@ enum SubCmd {
 struct MountArgs {
     disk_path: String,
     mount_name: String,
+    #[arg(long)]
+    mtp_device: Option<String>,
     #[arg(short, long)]
     custom_mount_point: bool, // if true, mount_name is not a hint but override
     #[arg(short = 't', long = "types")]
@@ -658,53 +662,6 @@ impl CustomActionRunner {
     }
 }
 
-// TODO: we might need this for custom actions on FreeBSD
-#[cfg(target_os = "linux")]
-fn statfs(path: impl AsRef<Path>) -> io::Result<libc::statfs> {
-    let c_path = CString::from_path(path.as_ref());
-    let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
-    if unsafe { libc::statfs(c_path.as_ptr(), &mut buf) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(buf)
-}
-
-fn export_args_for_path(
-    _path: &str,
-    export_mode: &str,
-    _fsid: usize,
-    export_args_override: Option<&str>,
-) -> anyhow::Result<String> {
-    #[cfg(target_os = "linux")]
-    let mut export_args = if let Some(override_args) = export_args_override {
-        override_args.to_owned()
-    } else {
-        format!("{export_mode},no_subtree_check,no_root_squash,insecure")
-    };
-    #[cfg(any(target_os = "freebsd", target_os = "macos"))]
-    let export_args = if let Some(override_args) = export_args_override {
-        override_args.to_owned()
-    } else {
-        format!(
-            "{}-maproot=root",
-            if export_mode == "ro" { "-ro " } else { "" }
-        )
-    };
-
-    #[cfg(target_os = "linux")]
-    if statfs(_path)
-        .with_context(|| format!("statfs failed for {_path}"))?
-        .f_type
-        == 0x65735546
-    {
-        // exporting FUSE requires fsid
-        if !export_args.contains("fsid=") {
-            export_args += &format!(",fsid={}", _fsid)
-        }
-    }
-    Ok(export_args)
-}
-
 const ALFS_PASSPHRASE_PREFIX: &[u8] = b"ALFS_PASSPHRASE";
 
 fn get_pwds_from_env() -> HashMap<usize, BString> {
@@ -804,9 +761,19 @@ fn mount_tmpfs(paths: &[&str]) -> anyhow::Result<()> {
 
 const KERNEL_LOG_PATH: &str = "/tmp/kernel.log";
 
-/// Bundles the mutable disk/volume state that flows through the entire
-/// vmproxy lifecycle — decryption, volume activation, filesystem detection,
-/// mount-label resolution, mounting, and NFS export generation.
+/// Common filesystem state consumed by NFS, regardless of its source.
+struct MountedFilesystem {
+    path: String,
+    read_only: bool,
+    extra_exports: Vec<String>,
+}
+
+enum MountSource {
+    Disk(Box<VmDiskContext>),
+    Mtp { device: String, mount_name: String },
+}
+
+/// Mutable disk/volume state: decryption, activation, detection and mounting.
 struct VmDiskContext {
     disk_path: String,
     fs_type: Option<String>,
@@ -1111,6 +1078,34 @@ impl VmDiskContext {
         Ok(())
     }
 
+    fn mounted_filesystem(&self, path: &str) -> anyhow::Result<MountedFilesystem> {
+        let read_only = if self.is_zfs {
+            self.specified_read_only()
+        } else {
+            let options = script_output(&format!(
+                "mount | grep {} | awk -F'(' '{{ print $2 }}' | tr -d ')'",
+                self.disk_path
+            ))
+            .with_context(|| format!("Failed to get mount options for {}", self.disk_path))?
+            .trim()
+            .to_owned();
+            println!("Effective mount options: {options}");
+            is_read_only_set(options.split(','))
+        };
+        if self.specified_read_only() != read_only {
+            println!("<anylinuxfs-mount:changed-to-ro>");
+        }
+        Ok(MountedFilesystem {
+            path: path.to_owned(),
+            read_only,
+            extra_exports: self
+                .zfs_mountpoints
+                .iter()
+                .map(|mount| mount.path.clone())
+                .collect(),
+        })
+    }
+
     /// Mount the filesystem (ZFS or regular) and register deferred cleanup.
     fn mount(&self, mount_point: &str, deferred: &mut Deferred) -> anyhow::Result<()> {
         let mnt_args = if !self.is_zfs {
@@ -1215,84 +1210,23 @@ impl VmDiskContext {
                     backoff = std::cmp::min(backoff * 2, Duration::from_secs(32));
                 }
                 println!("Unmounted '{}' successfully.", &mount_point);
-
-                _ = fs::remove_dir(&mount_point);
             }
         });
 
-        Ok(())
-    }
-
-    /// Build NFS export configuration and write /etc/exports (or /tmp/exports).
-    fn build_nfs_exports(
-        &self,
-        export_paths: Vec<String>,
-        export_mode: &str,
-        effective_export_args_override: Option<&str>,
-    ) -> anyhow::Result<()> {
-        let all_exports = if self.is_zfs {
-            let mut paths: BTreeSet<_> = self
-                .zfs_mountpoints
-                .iter()
-                .map(|m| m.path.clone())
-                .collect();
-
-            for path in &export_paths {
-                paths.insert(path.clone());
-            }
-
-            let mut exports = vec![];
-            for (i, p) in paths.into_iter().enumerate() {
-                let a = export_args_for_path(&p, export_mode, i, effective_export_args_override)?;
-                exports.push((p, a));
-            }
-            exports
-        } else {
-            let mut exports = vec![];
-            let paths: BTreeSet<_> = export_paths.into_iter().collect();
-            for (i, path) in paths.into_iter().enumerate() {
-                let args =
-                    export_args_for_path(&path, export_mode, i, effective_export_args_override)?;
-                exports.push((path, args));
-            }
-            exports
-        };
-        let mut exports_content = String::new();
-
-        for (export_path, export_args) in &all_exports {
-            println!("<anylinuxfs-nfs-export:{}>", export_path);
-            #[cfg(target_os = "linux")]
-            {
-                exports_content += &format!("\"{}\"      *({})\n", export_path, export_args);
-            }
-            #[cfg(any(target_os = "freebsd", target_os = "macos"))]
-            {
-                exports_content += &format!("{} {},network 0.0.0.0/0\n", export_path, export_args);
-            }
-        }
-
-        let nfs_exports_path = if cfg!(target_os = "freebsd") {
-            "/etc/exports"
-        } else {
-            "/tmp/exports"
-        };
-
-        fs::write(nfs_exports_path, exports_content)
-            .context(format!("Failed to write to {}", nfs_exports_path))?;
-        println!("Successfully initialized {}.", nfs_exports_path);
         Ok(())
     }
 }
 
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let ctrl_server;
+    let mut deferred = Deferred::new();
 
     #[cfg(target_os = "linux")]
     let tmpfs_dirs = &[
         "/.config",
         "/.cache",
         "/mnt",
-        "/tmp",
         "/run",
         "/var/lib/nfs",
         "/etc/lvm/archive",
@@ -1300,9 +1234,31 @@ fn run() -> anyhow::Result<()> {
     ];
 
     #[cfg(any(target_os = "freebsd", target_os = "macos"))]
-    let tmpfs_dirs = &["/mnt", "/tmp"];
+    let tmpfs_dirs = &["/mnt"];
 
     mount_tmpfs(tmpfs_dirs)?;
+    #[cfg(target_os = "linux")]
+    if matches!(&cli.command, SubCmd::Mount(args) if args.mtp_device.is_some()) {
+        // musl tmpfile() uses /tmp; select its disk-backed filesystem before DNS/NFS setup.
+        let status = Command::new("/bin/mount")
+            .args(["-t", "virtiofs"])
+            .arg(OsStr::from_bytes(common_utils::MTP_CACHE_TAG.to_bytes()))
+            .arg("/tmp")
+            .status()
+            .context("Mount MTP disk cache")?;
+        if !status.success() {
+            anyhow::bail!("Mounting MTP disk cache failed: {status}");
+        }
+        deferred.add(|| {
+            if let Err(error) = unmount("/tmp", UnmountFlags::empty()) {
+                eprintln!("Unmount MTP disk cache: {error}");
+            }
+        });
+    } else {
+        mount_tmpfs(&["/tmp"])?;
+    }
+    #[cfg(not(target_os = "linux"))]
+    mount_tmpfs(&["/tmp"])?;
 
     #[cfg(target_os = "linux")]
     for dir in ["/var/lib/nfs/rpc_pipefs", "/var/lib/nfs/sm"] {
@@ -1343,15 +1299,13 @@ fn run() -> anyhow::Result<()> {
     #[cfg(any(target_os = "freebsd", target_os = "macos"))]
     let listener = TcpListener::bind(&format!("0.0.0.0:{}", VM_CTRL_PORT))?;
 
-    let ctrl_server = CtrlSocketServer::new(
+    ctrl_server = CtrlSocketServer::new(
         listener,
         cli.native_network,
         cli.bind_addrs.clone(),
         telnet_public_key.to_owned(),
     );
     println!("<anylinuxfs-vmproxy-ready>");
-
-    let mut deferred = Deferred::new();
 
     deferred.add(|| {
         let kernel_log_warning = format!(
@@ -1405,58 +1359,80 @@ fn run() -> anyhow::Result<()> {
     let key_file_path = setup_key_file_path(cli.key_file.clone(), &mut deferred)
         .context("Failed to set up encryption key file")?;
 
-    let mut dsk = VmDiskContext::new(cli, key_file_path);
+    let mut source = match &cli.mtp_device {
+        Some(device) => MountSource::Mtp {
+            device: device.clone(),
+            mount_name: cli.mount_name.clone(),
+        },
+        None => MountSource::Disk(Box::new(VmDiskContext::new(cli, key_file_path))),
+    };
 
-    // decrypt LUKS/BitLocker volumes if any
-    if let Some(decrypt) = &cli.decrypt {
-        dsk.decrypt(decrypt, cli.reuse_passphrase, &mut deferred)?;
+    if let MountSource::Disk(dsk) = &mut source {
+        // decrypt LUKS/BitLocker volumes if any
+        if let Some(decrypt) = &cli.decrypt {
+            dsk.decrypt(decrypt, cli.reuse_passphrase, &mut deferred)?;
+        }
+
+        dsk.activate_volume_managers()?;
+
+        dsk.detect_fs_type()?;
+
+        if !cli.custom_mount_point {
+            dsk.resolve_mount_label()?;
+        }
+
+        // scan multidisk volumes
+        if cli.multi_device && dsk.fs_type.as_deref() == Some("btrfs") {
+            Command::new("/sbin/btrfs")
+                .args(["device", "scan"])
+                .status()
+                .context("Failed to run btrfs command")?;
+        }
+
+        common_utils::fail_for_known_nonmountable_types(dsk.fs_type.as_deref())?;
     }
 
-    dsk.activate_volume_managers()?;
-
-    dsk.detect_fs_type()?;
-
-    if !cli.custom_mount_point {
-        dsk.resolve_mount_label()?;
-    }
-
-    // scan multidisk volumes
-    if cli.multi_device && dsk.fs_type.as_deref() == Some("btrfs") {
-        Command::new("/sbin/btrfs")
-            .args(["device", "scan"])
-            .status()
-            .context("Failed to run btrfs command")?;
-    }
-
-    common_utils::fail_for_known_nonmountable_types(dsk.fs_type.as_deref())?;
-
-    let mount_point = if !dsk.mount_name.is_empty() {
-        let mount_point = format!("/mnt/{}", dsk.mount_name);
+    let mount_name = match &source {
+        MountSource::Disk(dsk) => &dsk.mount_name,
+        MountSource::Mtp { mount_name, .. } => mount_name,
+    };
+    let mount_point = if !mount_name.is_empty() {
+        let mount_point = format!("/mnt/{mount_name}");
         custom_action.set_env("ALFS_VM_MOUNT_POINT", mount_point.clone());
 
         fs::create_dir_all(&mount_point)
             .context(format!("Failed to create directory '{}'", &mount_point))?;
         println!("Directory '{}' created successfully.", &mount_point);
+        deferred.add({
+            let mount_point = mount_point.clone();
+            move || {
+                _ = fs::remove_dir(mount_point);
+            }
+        });
         mount_point
     } else {
         "".into()
     };
 
-    dsk.import_zfs_pools(&mount_point)?;
+    if let MountSource::Disk(dsk) = &mut source {
+        dsk.import_zfs_pools(&mount_point)?;
 
-    #[cfg(all(feature = "freebsd", target_os = "linux"))]
-    {
-        // Inform the user about ZFS crypto performance on Linux arm64 and suggest using FreeBSD
-        if dsk.zfs_mountpoints.iter().any(|m| m.encrypted) {
-            println!("<anylinuxfs-force-output:on>");
-            println!("Warning: Using encrypted ZFS datasets on Linux with ARM64 hardware results");
-            println!("in degraded performance due to GPL/CDDL license incompatibility.");
-            println!("You can use a FreeBSD VM which is not affected by this issue.");
-            println!(
-                "Simply run `anylinuxfs config --zfs-os freebsd` to set it as default for ZFS."
-            );
-            println!("For more information, see https://github.com/openzfs/zfs/issues/12171");
-            println!("<anylinuxfs-force-output:off>");
+        #[cfg(all(feature = "freebsd", target_os = "linux"))]
+        {
+            // Inform the user about ZFS crypto performance on Linux arm64 and suggest using FreeBSD
+            if dsk.zfs_mountpoints.iter().any(|m| m.encrypted) {
+                println!("<anylinuxfs-force-output:on>");
+                println!(
+                    "Warning: Using encrypted ZFS datasets on Linux with ARM64 hardware results"
+                );
+                println!("in degraded performance due to GPL/CDDL license incompatibility.");
+                println!("You can use a FreeBSD VM which is not affected by this issue.");
+                println!(
+                    "Simply run `anylinuxfs config --zfs-os freebsd` to set it as default for ZFS."
+                );
+                println!("For more information, see https://github.com/openzfs/zfs/issues/12171");
+                println!("<anylinuxfs-force-output:off>");
+            }
         }
     }
 
@@ -1464,8 +1440,13 @@ fn run() -> anyhow::Result<()> {
         .before_mount()
         .context("before_mount action")?;
 
-    if !dsk.disk_path.is_empty() && !mount_point.is_empty() {
-        dsk.mount(&mount_point, &mut deferred)?;
+    match &source {
+        MountSource::Mtp { device, .. } => mtp::mount(device, &mount_point, &mut deferred)?,
+        MountSource::Disk(dsk) => {
+            if !dsk.disk_path.is_empty() && !mount_point.is_empty() {
+                dsk.mount(&mount_point, &mut deferred)?;
+            }
+        }
     }
 
     custom_action.after_mount().context("after_mount action")?;
@@ -1476,36 +1457,19 @@ fn run() -> anyhow::Result<()> {
         };
     });
 
-    let effective_mount_options = {
-        let opts = script_output(&format!(
-            "mount | grep {} | awk -F'(' '{{ print $2 }}' | tr -d ')'",
-            &dsk.disk_path
-        ))
-        .with_context(|| format!("Failed to get mount options for {}", &dsk.disk_path))?
-        .trim()
-        .to_owned();
-        println!("Effective mount options: {}", opts);
-        opts
-    }
-    .split(',')
-    .map(|s| s.to_owned())
-    .collect::<Vec<String>>();
-
-    let effective_read_only = if dsk.is_zfs {
-        // we don't check effective ro flag for ZFS
-        // (it's only useful for NTFS in hibernation anyway)
-        dsk.specified_read_only()
-    } else {
-        is_read_only_set(effective_mount_options.iter().map(String::as_str))
+    // Custom actions may remount a disk; obtain effective permissions afterwards.
+    let mounted = match &source {
+        MountSource::Disk(dsk) => dsk.mounted_filesystem(&mount_point)?,
+        MountSource::Mtp { .. } => MountedFilesystem {
+            path: mount_point,
+            read_only: true,
+            extra_exports: vec![],
+        },
     };
-
-    if dsk.specified_read_only() != effective_read_only {
-        println!("<anylinuxfs-mount:changed-to-ro>");
-    }
 
     let export_path = match nfs_export_override {
         Some(path) => path,
-        _ => mount_point,
+        _ => mounted.path,
     };
     let export_paths: Vec<String> = std::iter::once(export_path.clone())
         .chain(nfs_export_subdirs.iter().map(|s| {
@@ -1513,20 +1477,15 @@ fn run() -> anyhow::Result<()> {
                 .to_string_lossy()
                 .into()
         }))
+        .chain(mounted.extra_exports)
         .collect();
 
-    let export_mode = if effective_read_only { "ro" } else { "rw" };
-
-    let squash_opts_storage;
-    let effective_export_args_override = if ignore_permissions && export_args_override.is_none() {
-        squash_opts_storage =
-            format!("{export_mode},no_subtree_check,all_squash,anonuid=0,anongid=0,insecure");
-        Some(squash_opts_storage.as_str())
-    } else {
-        export_args_override
-    };
-
-    dsk.build_nfs_exports(export_paths, export_mode, effective_export_args_override)?;
+    nfs::export(
+        export_paths,
+        mounted.read_only,
+        export_args_override,
+        ignore_permissions,
+    )?;
 
     match Command::new("/usr/local/bin/entrypoint.sh").spawn() {
         Ok(mut hnd) => {
