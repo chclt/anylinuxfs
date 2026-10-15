@@ -18,6 +18,7 @@ pub const VM_IP: &str = "192.168.127.2";
 pub const VM_CTRL_PORT: u16 = 7350;
 pub const USBIP_VSOCK_PORT: u32 = 12701;
 pub const MTP_CACHE_TAG: &std::ffi::CStr = c"alfs-mtp-cache";
+pub const MTP_WRITEBACK_DIR: &str = "mtp-writeback";
 pub const VMNET_PREFIX_LEN: u8 = 30;
 pub const TELNET_AUTH_DOMAIN: &[u8] = b"anylinuxfs/telnet-auth/v1\0";
 

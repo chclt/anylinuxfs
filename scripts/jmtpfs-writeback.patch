@@ -1,0 +1,337 @@
+--- a/src/MtpDevice.cpp
++++ b/src/MtpDevice.cpp
+@@ -19,6 +19,7 @@
+  * licensing@fsf.org
+  */
+ #include "MtpDevice.h"
++#include "mtpFilesystemErrors.h"
+ #include "MtpLibLock.h"
+ #include "ConnectedMtpDevices.h"
+ #include <sys/stat.h>
+@@ -221,7 +222,7 @@
+ 		CheckErrors(true);
+ }
+ 
+-void MtpDevice::SendFile(LIBMTP_file_t* destination, int fd)
++void MtpDevice::PrepareFile(LIBMTP_file_t* destination, int fd)
+ {
+ MtpLibLock lock;
+ 
+@@ -245,12 +246,26 @@
+ 	}
+ 	if (mimeType)
+ 		destination->filetype = PropertyTypeFromMimeType(mimeType);
+-
++}
++
++void MtpDevice::SendFile(LIBMTP_file_t* destination, int fd)
++{
++MtpLibLock lock;
+ 
+ 	if (LIBMTP_Send_File_From_File_Descriptor(m_mtpdevice, fd, destination, 0,0))
+ 		CheckErrors(true);
+ }
+ 
++
++void MtpDevice::RequireFileRename(LIBMTP_filetype_t type)
++{
++	MtpLibLock lock;
++	int supported = LIBMTP_Is_Property_Supported(m_mtpdevice, LIBMTP_PROPERTY_ObjectFileName, type);
++	if (supported < 0)
++		CheckErrors(true);
++	if (!supported)
++		throw MtpFilesystemErrorWithErrorCode(EOPNOTSUPP, "Device does not support object filenames");
++}
+ 
+ void MtpDevice::RenameFile(uint32_t id, const std::string& newName)
+ {
+@@ -359,9 +374,6 @@
+ 		return LIBMTP_FILETYPE_OGG;
+ 	if (mimeType == "audio/mpeg")
+ 		return LIBMTP_FILETYPE_MP3;
+-	if (mimeType == "")
+-
+-
+ 	if (mimeType.substr(0,5) == "text/")
+ 		return LIBMTP_FILETYPE_TEXT;
+ 	if (mimeType.substr(0,6) == "video/")
+--- a/src/MtpDevice.h
++++ b/src/MtpDevice.h
+@@ -131,9 +131,11 @@
+ 	std::vector<MtpFileInfo> GetFolderContents(uint32_t storageId, uint32_t folderId);
+ 	MtpFileInfo GetFileInfo(uint32_t id);
+ 	void GetFile(uint32_t id, int fd);
++	void PrepareFile(LIBMTP_file_t* destination, int fd);
+ 	void SendFile(LIBMTP_file_t* destination, int fd);
+ 	void CreateFolder(const std::string& name, uint32_t parentId, uint32_t storageId);
+ 	void DeleteObject(uint32_t id);
++	void RequireFileRename(LIBMTP_filetype_t type);
+ 	void RenameFile(uint32_t id, const std::string& newName);
+ 	void SetObjectProperty(uint32_t id, LIBMTP_property_t property, const std::string& value);
+ 	static LIBMTP_filetype_t PropertyTypeFromMimeType(const std::string& mimeType);
+--- a/src/MtpFile.cpp
++++ b/src/MtpFile.cpp
+@@ -84,7 +84,9 @@
+ 
+ void MtpFile::Fsync()
+ {
+-	uint32_t parentId = GetParentNodeId();
++	if (!m_localFile->dirty())
++		return;
++	uint32_t parentId = m_localFile->parentId();
+ 	uint32_t oldId = Id();
+ 	m_localFile->sync();
+ 	m_cache.updateFile(oldId, m_localFile);
+--- a/src/MtpLocalFileCopy.cpp
++++ b/src/MtpLocalFileCopy.cpp
+@@ -23,13 +23,50 @@
+ #include <sys/stat.h>
+ #include <iostream>
+ #include <unistd.h>
++#include <fcntl.h>
++#include <cstdlib>
++#include <memory>
++#include <sstream>
++
++// Names from the device are hex encoded so recovery records remain line oriented.
++static std::string hexName(const std::string& name)
++{
++	const char* digits = "0123456789abcdef";
++	std::string result;
++	for (unsigned char byte : name)
++	{
++		result += digits[byte >> 4];
++		result += digits[byte & 15];
++	}
++	return result;
++}
+ 
+ MtpLocalFileCopy::MtpLocalFileCopy(MtpDevice& device, uint32_t id) :
+-	m_device(device), m_remoteId(id), m_needWriteBack(false)
+-{
+-	m_localFile = tmpfile();
+-	if (m_localFile == 0)
++	m_device(device), m_remoteId(id), m_stage(Clean), m_replacementId(0)
++{
++	const char* directory = getenv("JMTPFS_WRITEBACK_DIR");
++	m_directory = directory ? directory : "/tmp/mtp-writeback";
++	if (mkdir(m_directory.c_str(), 0700) && errno != EEXIST)
+ 		throw CantCreateTempFile(errno);
++	std::string pattern = m_directory + "/cache-XXXXXX";
++	std::vector<char> name(pattern.begin(), pattern.end());
++	name.push_back(0);
++	int fd = mkstemp(name.data());
++	if (fd < 0)
++		throw CantCreateTempFile(errno);
++	m_cachePath = name.data();
++	m_recordPath = m_cachePath + ".record";
++	std::string suffix = m_cachePath.substr(m_cachePath.find_last_of('/') + 1);
++	m_uploadName = ".alfs-upload-" + suffix;
++	m_backupName = ".alfs-backup-" + suffix;
++	m_localFile = fdopen(fd, "w+");
++	if (!m_localFile)
++	{
++		int error = errno;
++		close(fd);
++		unlink(m_cachePath.c_str());
++		throw CantCreateTempFile(error);
++	}
+ 	try
+ 	{
+ 		m_device.GetFile(m_remoteId, fileno(m_localFile));
+@@ -37,33 +74,113 @@
+ 	catch (...)
+ 	{
+ 		fclose(m_localFile);
++		unlink(m_cachePath.c_str());
+ 		throw;
+ 	}
+-
+ }
+ 
+ MtpLocalFileCopy::~MtpLocalFileCopy()
+ {
+ 	fclose(m_localFile);
++	if (!dirty() && unlink(m_cachePath.c_str()))
++		std::cerr << "Remove MTP cache " << m_cachePath << ": " << strerror(errno) << std::endl;
++}
++
++void MtpLocalFileCopy::syncDirectory()
++{
++	int fd = open(m_directory.c_str(), O_RDONLY | O_DIRECTORY);
++	if (fd < 0)
++		throw WriteError(errno);
++	int result = fsync(fd);
++	int error = errno;
++	close(fd);
++	if (result)
++		throw WriteError(error);
++}
++
++void MtpLocalFileCopy::record(Stage stage)
++{
++	m_stage = stage;
++	static const char* stages[] = { "clean", "dirty", "uploading", "backing-up",
++		"publishing", "cleaning-up", "complete" };
++	std::ostringstream text;
++	text << "version=1\n" << "stage=" << stages[stage] << "\n"
++		<< "original_id=" << m_remoteId << "\n"
++		<< "replacement_id=" << m_replacementId << "\n"
++		<< "parent_id=" << m_target.parentId << "\n"
++		<< "storage_id=" << m_target.storageId << "\n"
++		<< "target_name_hex=" << hexName(m_target.name) << "\n"
++		<< "upload_name_hex=" << hexName(m_uploadName) << "\n"
++		<< "backup_name_hex=" << hexName(m_backupName) << "\n";
++	std::string next = m_recordPath + ".next";
++	std::unique_ptr<FILE, int (*)(FILE*)> output(fopen(next.c_str(), "w"), fclose);
++	if (!output)
++		throw WriteError(errno);
++	std::string content = text.str();
++	if (fwrite(content.data(), 1, content.size(), output.get()) != content.size()
++		|| fflush(output.get()) || fsync(fileno(output.get())))
++		throw WriteError(errno);
++	if (rename(next.c_str(), m_recordPath.c_str()))
++		throw WriteError(errno);
++	syncDirectory();
++}
++
++void MtpLocalFileCopy::syncData()
++{
++	if (fflush(m_localFile) || fsync(fileno(m_localFile)))
++		throw WriteError(errno);
++}
++
++void MtpLocalFileCopy::beginWrite()
++{
++	if (m_stage == Clean)
++	{
++		m_target = m_device.GetFileInfo(m_remoteId);
++		m_replacementId = 0;
++		syncData();
++		record(Dirty);
++	}
++	else if (m_stage != Dirty)
++		throw MtpFilesystemErrorWithErrorCode(EIO, "MTP writeback requires recovery: " + m_recordPath);
+ }
+ 
+ void MtpLocalFileCopy::sync()
+ {
+-	if (!m_needWriteBack)
++	if (m_stage == Clean)
+ 		return;
+-	if (fflush(m_localFile))
+-		throw WriteError(errno);
+-	if (fseek(m_localFile, 0, SEEK_SET))
+-		throw WriteError(errno);
+-	struct stat tempInfo;
+-	if (fstat(fileno(m_localFile), &tempInfo))
+-		throw ReadError(errno);
+-	MtpFileInfo remoteInfo = m_device.GetFileInfo(m_remoteId);
+-	NewLIBMTPFile newFile(remoteInfo.name, remoteInfo.parentId, remoteInfo.storageId, tempInfo.st_size);
++	if (m_stage != Dirty)
++		throw MtpFilesystemErrorWithErrorCode(EIO, "MTP writeback requires recovery: " + m_recordPath);
++	syncData();
++	NewLIBMTPFile newFile(m_uploadName, m_target.parentId, m_target.storageId, getSize());
++	m_device.PrepareFile(newFile, fileno(m_localFile));
++	LIBMTP_filetype_t uploadType = ((LIBMTP_file_t*)newFile)->filetype;
++	m_device.RequireFileRename(uploadType);
++	if (m_target.id && m_target.filetype != uploadType)
++		m_device.RequireFileRename(m_target.filetype);
++	record(Uploading);
++	try
++	{
++		m_device.SendFile(newFile, fileno(m_localFile));
++	}
++	catch (...)
++	{
++		// libmtp may allocate an object ID before its payload transfer fails.
++		m_replacementId = ((LIBMTP_file_t*)newFile)->item_id;
++		record(Uploading);
++		throw;
++	}
++	m_replacementId = ((LIBMTP_file_t*)newFile)->item_id;
++	record(BackingUp);
++	m_device.RenameFile(m_remoteId, m_backupName);
++	record(Publishing);
++	m_device.RenameFile(m_replacementId, m_target.name);
++	record(CleaningUp);
+ 	m_device.DeleteObject(m_remoteId);
+-	m_device.SendFile(newFile, fileno(m_localFile));
+-	m_remoteId = ((LIBMTP_file_t*)newFile)->item_id;
+-	m_needWriteBack = false;
++	record(Complete);
++	if (unlink(m_recordPath.c_str()))
++		throw WriteError(errno);
++	m_remoteId = m_replacementId;
++	m_stage = Clean;
+ }
+ 
+ off_t MtpLocalFileCopy::getSize()
+@@ -84,11 +201,13 @@
+ 
+ size_t MtpLocalFileCopy::write(const void* ptr, size_t size)
+ {
++	beginWrite();
+ 	size_t wroteBytes = fwrite(ptr, 1, size, m_localFile);
+-	m_needWriteBack = true;
+ 	if (wroteBytes!= size)
+ 		if (ferror(m_localFile))
+ 			throw WriteError(errno);
++	if (fflush(m_localFile))
++		throw WriteError(errno);
+ 	return wroteBytes;
+ }
+ 
+@@ -104,9 +223,9 @@
+ 
+ void MtpLocalFileCopy::truncate(off_t length)
+ {
++	beginWrite();
+ 	if (ftruncate(fileno(m_localFile), length))
+ 		throw WriteError(errno);
+-	m_needWriteBack = true;
+ }
+ 
+ void MtpLocalFileCopy::CopyTo(MtpDevice& device, NewLIBMTPFile& destination)
+@@ -119,5 +238,6 @@
+ 	if (fstat(fileno(m_localFile), &tempInfo))
+ 			throw ReadError(errno);
+ 
++	device.PrepareFile(destination, fileno(m_localFile));
+ 	device.SendFile(destination, fileno(m_localFile));
+ }
+--- a/src/MtpLocalFileCopy.h
++++ b/src/MtpLocalFileCopy.h
+@@ -33,8 +33,9 @@
+ 	// Synchronization leaves the local copy open for all existing handles.
+ 	void sync();
+ 	uint32_t id() const { return m_remoteId; }
++	uint32_t parentId() const { return m_target.parentId ? m_target.parentId : m_target.storageId; }
+ 	void setId(uint32_t id) { m_remoteId = id; }
+-	bool dirty() const { return m_needWriteBack; }
++	bool dirty() const { return m_stage != Clean; }
+ 
+ 	off_t getSize();
+ 
+@@ -52,7 +53,20 @@
+ 	MtpDevice&			m_device;
+ 	FILE*				m_localFile;
+ 	uint32_t			m_remoteId;
+-	bool				m_needWriteBack;
++	enum Stage { Clean, Dirty, Uploading, BackingUp, Publishing, CleaningUp, Complete };
++	void beginWrite();
++	void syncData();
++	void record(Stage stage);
++	void syncDirectory();
++
++	Stage m_stage;
++	MtpFileInfo m_target;
++	uint32_t m_replacementId;
++	std::string m_directory;
++	std::string m_cachePath;
++	std::string m_recordPath;
++	std::string m_uploadName;
++	std::string m_backupName;
+ };
+ 
+ 

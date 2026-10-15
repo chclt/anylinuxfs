@@ -353,23 +353,25 @@ pub(crate) fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         if cmd
             .options
             .as_deref()
-            .is_some_and(|opts| opts.split(',').any(|opt| opt != "ro"))
+            .is_some_and(|opts| opts.split(',').any(|opt| !matches!(opt, "ro" | "rw")))
         {
-            anyhow::bail!("MTP currently accepts only the ro mount option");
+            anyhow::bail!("MTP accepts only ro or rw mount options");
         }
     }
     let mount_options = if mtp_device.is_some() {
-        Some("ro".to_owned())
+        Some(cmd.options.unwrap_or_else(|| "ro".to_owned()))
     } else {
         cmd.options
     };
+    let read_only = is_read_only_set(mount_options.as_deref());
 
     let mut nfs_options = cmd.nfs_options.unwrap_or_default();
     let nfs_export_opts = if mtp_device.is_some() {
+        let mode = if read_only { "ro" } else { "rw" };
         nfs_options.retain(|option| !matches!(option.split('=').next(), Some("rw" | "ro")));
-        nfs_options.push("ro".into());
+        nfs_options.push(mode.into());
         cmd.nfs_export_opts.map(|options| {
-            std::iter::once("ro")
+            std::iter::once(mode)
                 .chain(
                     options
                         .split(',')
@@ -430,7 +432,6 @@ pub(crate) fn load_mount_config(cmd: MountCmd) -> anyhow::Result<MountConfig> {
         None => None,
     };
 
-    let read_only = is_read_only_set(mount_options.as_deref());
     let verbose = cmd.verbose;
 
     let fs_driver = cmd.fs_driver;
@@ -1330,7 +1331,7 @@ impl AppRunner {
                 if let Some(mtp) = &rt_info.mount_config.mtp {
                     wait_for_proc_exit(rt_info.vmm_pid)
                         .context("Wait for VM before removing MTP cache")?;
-                    _ = fs::remove_dir_all(&mtp.cache_path);
+                    mtp::cleanup_cache(&mtp.cache_path)?;
                 }
                 return Ok(());
             }

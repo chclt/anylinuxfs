@@ -108,11 +108,11 @@ pub(crate) struct DebugArgs {
 pub(crate) struct DiskIdentArg {
     #[cfg_attr(
         target_os = "macos",
-        doc = "File path(s), LVM, RAID or experimental MTP identifier, e.g.:\n/dev/diskXsY[:/dev/diskYsZ:...]\npath/to/disk.img@s1[:path/to/image.qcow2@s2:...]\nlvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>\nlvm:<vg-name>:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]:<lv-name>\nraid:diskXsY[:diskYsZ:...]\nraid:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]\nmtp:<USB bus ID from `list --usb`> (read-only)\n(see `list` command output for available volumes)"
+        doc = "File path(s), LVM, RAID or experimental MTP identifier, e.g.:\n/dev/diskXsY[:/dev/diskYsZ:...]\npath/to/disk.img@s1[:path/to/image.qcow2@s2:...]\nlvm:<vg-name>:diskXsY[:diskYsZ:...]:<lv-name>\nlvm:<vg-name>:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]:<lv-name>\nraid:diskXsY[:diskYsZ:...]\nraid:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]\nmtp:<USB bus ID from `list --usb`> (read-only by default; -o rw for experimental writes)\n(see `list` command output for available volumes)"
     )]
     #[cfg_attr(
         target_os = "linux",
-        doc = "File path(s), LVM, RAID or experimental MTP identifier, e.g.:\n/dev/sdXN[:/dev/sdYM:...]\n/dev/nvmeXnYpZ[:/dev/nvmeAnBpC:...]\npath/to/disk.img@s1[:path/to/image.qcow2@s2:...]\nlvm:<vg-name>:/dev/sdXN[:/dev/sdYM:...]:<lv-name>\nlvm:<vg-name>:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]:<lv-name>\nraid:/dev/sdXN[:/dev/sdYM:...]\nraid:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]\nmtp:<USB bus ID from `list --usb`> (read-only)\n(see `list` command output for available volumes)"
+        doc = "File path(s), LVM, RAID or experimental MTP identifier, e.g.:\n/dev/sdXN[:/dev/sdYM:...]\n/dev/nvmeXnYpZ[:/dev/nvmeAnBpC:...]\npath/to/disk.img@s1[:path/to/image.qcow2@s2:...]\nlvm:<vg-name>:/dev/sdXN[:/dev/sdYM:...]:<lv-name>\nlvm:<vg-name>:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]:<lv-name>\nraid:/dev/sdXN[:/dev/sdYM:...]\nraid:path/to/disk.img@s1[:path/to/image.qcow2@s2:...]\nmtp:<USB bus ID from `list --usb`> (read-only by default; -o rw for experimental writes)\n(see `list` command output for available volumes)"
     )]
     #[clap(verbatim_doc_comment)]
     pub disk_ident: Option<String>,
@@ -134,7 +134,7 @@ pub(crate) struct MountCmd {
         doc = "Custom mount path to override the default under /mnt"
     )]
     pub mount_point: Option<String>,
-    /// Options passed to the Linux mount command (comma-separated)
+    /// Linux mount options (comma-separated); MTP accepts ro or rw and defaults to ro
     #[arg(short, long)]
     pub options: Option<String>,
     /// NFS options passed to the host mount command (comma-separated)

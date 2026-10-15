@@ -505,12 +505,16 @@ pub(crate) fn start_vmproxy(
         Vec::from_iter(bind_addrs).join(",").into(),
     ]
     .into_iter()
-    .chain(
-        config
-            .mtp_device()
-            .into_iter()
-            .flat_map(|device| ["--mtp-device".into(), device.into()]),
-    )
+    .chain(config.mtp_device().into_iter().flat_map(|device| {
+        [
+            "--mtp-device".into(),
+            device.into(),
+            "--mtp-uid".into(),
+            config.common.privilege.invoker_uid.to_string().into(),
+            "--mtp-gid".into(),
+            config.common.privilege.invoker_gid.to_string().into(),
+        ]
+    }))
     .chain(custom_mount_point.then_some("-c".into()).into_iter())
     .chain(
         ctx.vm_native_cidr

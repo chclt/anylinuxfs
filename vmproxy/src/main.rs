@@ -66,6 +66,10 @@ struct MountArgs {
     mount_name: String,
     #[arg(long)]
     mtp_device: Option<String>,
+    #[arg(long, default_value_t = 0)]
+    mtp_uid: u32,
+    #[arg(long, default_value_t = 0)]
+    mtp_gid: u32,
     #[arg(short, long)]
     custom_mount_point: bool, // if true, mount_name is not a hint but override
     #[arg(short = 't', long = "types")]
@@ -770,7 +774,12 @@ struct MountedFilesystem {
 
 enum MountSource {
     Disk(Box<VmDiskContext>),
-    Mtp { device: String, mount_name: String },
+    Mtp {
+        device: String,
+        mount_name: String,
+        read_only: bool,
+        owner: (u32, u32),
+    },
 }
 
 /// Mutable disk/volume state: decryption, activation, detection and mounting.
@@ -1363,6 +1372,12 @@ fn run() -> anyhow::Result<()> {
         Some(device) => MountSource::Mtp {
             device: device.clone(),
             mount_name: cli.mount_name.clone(),
+            read_only: cli
+                .mount_options
+                .as_deref()
+                .map(|options| is_read_only_set(options.split(',')))
+                .unwrap_or(true),
+            owner: (cli.mtp_uid, cli.mtp_gid),
         },
         None => MountSource::Disk(Box::new(VmDiskContext::new(cli, key_file_path))),
     };
@@ -1441,7 +1456,12 @@ fn run() -> anyhow::Result<()> {
         .context("before_mount action")?;
 
     match &source {
-        MountSource::Mtp { device, .. } => mtp::mount(device, &mount_point, &mut deferred)?,
+        MountSource::Mtp {
+            device,
+            read_only,
+            owner,
+            ..
+        } => mtp::mount(device, &mount_point, *read_only, *owner, &mut deferred)?,
         MountSource::Disk(dsk) => {
             if !dsk.disk_path.is_empty() && !mount_point.is_empty() {
                 dsk.mount(&mount_point, &mut deferred)?;
@@ -1460,9 +1480,9 @@ fn run() -> anyhow::Result<()> {
     // Custom actions may remount a disk; obtain effective permissions afterwards.
     let mounted = match &source {
         MountSource::Disk(dsk) => dsk.mounted_filesystem(&mount_point)?,
-        MountSource::Mtp { .. } => MountedFilesystem {
+        MountSource::Mtp { read_only, .. } => MountedFilesystem {
             path: mount_point,
-            read_only: true,
+            read_only: *read_only,
             extra_exports: vec![],
         },
     };

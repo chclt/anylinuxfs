@@ -1,0 +1,703 @@
+--- a/src/Makefile.am
++++ b/src/Makefile.am
+@@ -2,6 +2,6 @@
+ jmtpfs_SOURCES=jmtpfs.cpp MtpDevice.cpp ConnectedMtpDevices.cpp Mutex.cpp MtpFilesystemPath.cpp \
+ 	MtpMetadataCache.cpp MtpNode.cpp MtpRoot.cpp MtpLibLock.cpp MtpStorage.cpp \
+ 	MtpFolder.cpp MtpFile.cpp TemporaryFile.cpp MtpLocalFileCopy.cpp \
+-	MtpFuseContext.cpp
++	MtpFuseContext.cpp MtpRecovery.cpp MtpRecovery.h MtpDirectoryTransactions.cpp MtpDirectoryTransactions.h
+ jmtpfs_CPPFLAGS = $(MTP_CFLAGS) $(FUSE_CFLAGS)
+ jmtpfs_LDADD = $(MTP_LIBS) $(FUSE_LIBS)
+--- a/src/MtpDevice.cpp
++++ b/src/MtpDevice.cpp
+@@ -268,11 +268,16 @@
+ 		throw MtpFilesystemErrorWithErrorCode(EOPNOTSUPP, "Device does not support object filenames");
+ }
+ 
+-void MtpDevice::MoveObject(uint32_t id, uint32_t storageId, uint32_t parentId)
++void MtpDevice::RequireObjectMove()
+ {
+ 	MtpLibLock lock;
+ 	if (!LIBMTP_Check_Capability(m_mtpdevice, LIBMTP_DEVICECAP_MoveObject))
+ 		throw MtpFilesystemErrorWithErrorCode(EOPNOTSUPP, "Device does not support object moves");
++}
++
++void MtpDevice::MoveObject(uint32_t id, uint32_t storageId, uint32_t parentId)
++{
++	MtpLibLock lock;
+ 	if (LIBMTP_Move_Object(m_mtpdevice, id, storageId, parentId))
+ 		CheckErrors(true);
+ }
+--- a/src/MtpDevice.h
++++ b/src/MtpDevice.h
+@@ -136,6 +136,7 @@
+ 	void CreateFolder(const std::string& name, uint32_t parentId, uint32_t storageId);
+ 	void DeleteObject(uint32_t id);
+ 	void RequireFileRename(LIBMTP_filetype_t type);
++	void RequireObjectMove();
+ 	void MoveObject(uint32_t id, uint32_t storageId, uint32_t parentId);
+ 	void RenameFile(uint32_t id, const std::string& newName);
+ 	void SetObjectProperty(uint32_t id, LIBMTP_property_t property, const std::string& value);
+--- /dev/null
++++ b/src/MtpDirectoryTransactions.cpp
+@@ -0,0 +1,110 @@
++/*
++ * MtpDirectoryTransactions.cpp
++ *
++ *      Based on jmtpfs by Jason Ferrara
++ *
++ * This software is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 3 as published by the Free Software Foundation.
++ *
++ * This software is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this library; if not, write to the
++ * Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
++ * Boston, MA 02111-1301, USA.
++ * licensing@fsf.org
++ */
++
++#include "MtpDirectoryTransactions.h"
++#include "MtpRecovery.h"
++#include "mtpFilesystemErrors.h"
++#include <sstream>
++
++void MtpDirectoryTransactions::requireMutable(uint32_t id) const
++{
++	auto item = m_pending.find(id);
++	if (item != m_pending.end())
++		throw MtpFilesystemErrorWithErrorCode(EIO, "MTP directory requires recovery: " + item->second);
++}
++
++void MtpDirectoryTransactions::Rename(MtpDevice& device, const MtpFileInfo& source,
++	uint32_t parentId, const std::string& name, uint32_t targetId)
++{
++	requireMutable(source.id);
++	requireMutable(parentId ? parentId : source.storageId);
++	if (targetId)
++		requireMutable(targetId);
++	bool moving = parentId != source.parentId;
++	bool renaming = name != source.name;
++	if (moving)
++		device.RequireObjectMove();
++	if (renaming || targetId)
++		device.RequireFileRename(LIBMTP_FILETYPE_FOLDER);
++	if (!targetId && !(moving && renaming))
++	{
++		if (moving)
++			device.MoveObject(source.id, source.storageId, parentId);
++		else if (renaming)
++			device.RenameFile(source.id, name);
++		return;
++	}
++
++	std::string path = MtpRecovery::newDirectoryRecord();
++	std::string suffix = path.substr(path.find_last_of('/') + 1);
++	suffix.resize(suffix.size() - 7); // .record
++	std::string stagingName = ".alfs-move-" + suffix;
++	std::string backupName = ".alfs-backup-" + suffix;
++	m_pending[source.id] = path;
++	if (targetId)
++		m_pending[targetId] = path;
++	auto record = [&](const char* stage)
++	{
++		std::ostringstream text;
++		text << "version=1\noperation=directory-rename\nstage=" << stage << "\n"
++			<< "source_id=" << source.id << "\n"
++			<< "source_parent_id=" << source.parentId << "\n"
++			<< "storage_id=" << source.storageId << "\n"
++			<< "source_name_hex=" << MtpRecovery::hexName(source.name) << "\n"
++			<< "target_id=" << targetId << "\n"
++			<< "parent_id=" << parentId << "\n"
++			<< "target_name_hex=" << MtpRecovery::hexName(name) << "\n"
++			<< "staging_name_hex=" << MtpRecovery::hexName(stagingName) << "\n"
++			<< "backup_name_hex=" << MtpRecovery::hexName(backupName) << "\n";
++		MtpRecovery::write(path, text.str());
++	};
++	if (targetId)
++	{
++		record("backing-up");
++		device.RenameFile(targetId, backupName);
++	}
++	if (moving && renaming)
++	{
++		// Move under a unique name; the old name may exist in the new parent.
++		record("staging");
++		device.RenameFile(source.id, stagingName);
++	}
++	if (moving)
++	{
++		record("moving");
++		device.MoveObject(source.id, source.storageId, parentId);
++	}
++	if (renaming)
++	{
++		record("publishing");
++		device.RenameFile(source.id, name);
++	}
++	if (targetId)
++	{
++		record("cleaning-up");
++		device.DeleteObject(targetId);
++	}
++	record("complete");
++	MtpRecovery::remove(path);
++	m_pending.erase(source.id);
++	if (targetId)
++		m_pending.erase(targetId);
++}
+--- /dev/null
++++ b/src/MtpDirectoryTransactions.h
+@@ -0,0 +1,37 @@
++/*
++ * MtpDirectoryTransactions.h
++ *
++ *      Based on jmtpfs by Jason Ferrara
++ *
++ * This software is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 3 as published by the Free Software Foundation.
++ *
++ * This software is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this library; if not, write to the
++ * Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
++ * Boston, MA 02111-1301, USA.
++ * licensing@fsf.org
++ */
++
++#ifndef MTPDIRECTORYTRANSACTIONS_H_
++#define MTPDIRECTORYTRANSACTIONS_H_
++#include "MtpDevice.h"
++#include <map>
++
++// Filesystem-scoped directory state, independent of metadata and file copies.
++class MtpDirectoryTransactions
++{
++public:
++	void requireMutable(uint32_t id) const;
++	void Rename(MtpDevice& device, const MtpFileInfo& source,
++		uint32_t parentId, const std::string& name, uint32_t targetId);
++private:
++	std::map<uint32_t, std::string> m_pending;
++};
++#endif
+--- a/src/MtpFile.cpp
++++ b/src/MtpFile.cpp
+@@ -22,7 +22,7 @@
+ #include "mtpFilesystemErrors.h"
+ #include <errno.h>
+ 
+-MtpFile::MtpFile(MtpDevice& device,  MtpMetadataCache& cache, uint32_t id) : MtpNode(device, cache, id), m_localFile(cache.getOpenedFile(id))
++MtpFile::MtpFile(MtpDevice& device,  MtpMetadataCache& cache, MtpDirectoryTransactions& directories, uint32_t id) : MtpNode(device, cache, directories, id), m_localFile(cache.getOpenedFile(id))
+ {
+ }
+ 
+@@ -145,6 +145,7 @@
+ 		if (S_ISDIR(attrs.st_mode))
+ 			throw MtpFilesystemErrorWithErrorCode(EISDIR, "Target is a directory");
+ 	}
++	m_directories.requireMutable(newParent.Id());
+ 	Open();
+ 	Fsync();
+ 	source = getMetadata().self;
+--- a/src/MtpFile.h
++++ b/src/MtpFile.h
+@@ -28,7 +28,7 @@
+ class MtpFile : public MtpNode
+ {
+ public:
+-	MtpFile(MtpDevice& device,  MtpMetadataCache& cache, uint32_t id);
++	MtpFile(MtpDevice& device,  MtpMetadataCache& cache, MtpDirectoryTransactions& directories, uint32_t id);
+ 	~MtpFile();
+ 
+ 	std::unique_ptr<MtpNode> getNode(const FilesystemPath& path);
+--- a/src/MtpFolder.cpp
++++ b/src/MtpFolder.cpp
+@@ -24,8 +24,8 @@
+ #include "mtpFilesystemErrors.h"
+ 
+ 
+-MtpFolder::MtpFolder(MtpDevice& device, MtpMetadataCache& cache, uint32_t storageId,
+-		uint32_t folderId) : MtpNode(device, cache, folderId ? folderId : storageId),
++MtpFolder::MtpFolder(MtpDevice& device, MtpMetadataCache& cache, MtpDirectoryTransactions& directories, uint32_t storageId,
++		uint32_t folderId) : MtpNode(device, cache, directories, folderId ? folderId : storageId),
+ 		m_storageId(storageId), m_folderId(folderId)
+ {
+ 
+@@ -74,10 +74,10 @@
+ 		if (i->name == filename)
+ 		{
+ 			if (i->filetype != LIBMTP_FILETYPE_FOLDER)
+-				return std::unique_ptr<MtpNode>(new MtpFile(m_device, m_cache, i->id));
++				return std::unique_ptr<MtpNode>(new MtpFile(m_device, m_cache, m_directories, i->id));
+ 			else
+ 			{
+-				std::unique_ptr<MtpNode> n(new MtpFolder(m_device, m_cache, m_storageId, i->id));
++				std::unique_ptr<MtpNode> n(new MtpFolder(m_device, m_cache, m_directories, m_storageId, i->id));
+ 				FilesystemPath childPath = path.Body();
+ 				if (childPath.Empty())
+ 					return n;
+@@ -112,6 +112,7 @@
+ 
+ void MtpFolder::Remove()
+ {
++	m_directories.requireMutable(Id());
+ 	if (readDirectory().size()>0)
+ 		throw MtpDirectoryNotEmpty();
+ 	uint32_t parentId = GetParentNodeId();
+@@ -123,6 +124,7 @@
+ 
+ void MtpFolder::mkdir(const std::string& name)
+ {
++	m_directories.requireMutable(Id());
+ 	if (name.length() > MAX_MTP_NAME_LENGTH)
+ 		throw MtpNameTooLong();
+ 
+@@ -136,6 +138,7 @@
+ 
+ void MtpFolder::CreateFile(const std::string& name)
+ {
++	m_directories.requireMutable(Id());
+ 	if (name.length() > MAX_MTP_NAME_LENGTH)
+ 		throw MtpNameTooLong();
+ 	if (hasChild(name))
+@@ -172,18 +175,13 @@
+ 			throw MtpFilesystemErrorWithErrorCode(ENOTDIR, "Target is not a directory");
+ 		if (!target->readDirectory().empty())
+ 			throw MtpDirectoryNotEmpty();
+-		throw MtpFilesystemErrorWithErrorCode(EOPNOTSUPP, "Replacing an MTP directory is unsupported");
+ 	}
+-	bool moving = newParent.FolderId() != md.self.parentId;
+-	bool renaming = newName != md.self.name;
+-	if (moving && renaming)
+-		throw MtpFilesystemErrorWithErrorCode(EOPNOTSUPP, "Move and rename the directory separately");
+ 	uint32_t parentId = GetParentNodeId();
+ 	m_cache.clearItem(parentId);
+ 	m_cache.clearItem(newParent.Id());
+ 	m_cache.clearItem(m_id);
+-	if (moving)
+-		m_device.MoveObject(m_id, m_storageId, newParent.FolderId());
+-	else if (renaming)
+-		m_device.RenameFile(m_id, newName);
++	if (target)
++		m_cache.clearItem(target->Id());
++	m_directories.Rename(m_device, md.self, newParent.FolderId(), newName,
++		target ? target->Id() : 0);
+ }
+--- a/src/MtpFolder.h
++++ b/src/MtpFolder.h
+@@ -27,7 +27,7 @@
+ class MtpFolder : public MtpNode
+ {
+ public:
+-	MtpFolder(MtpDevice& device, MtpMetadataCache& cache, uint32_t storageId, uint32_t folderId);
++	MtpFolder(MtpDevice& device, MtpMetadataCache& cache, MtpDirectoryTransactions& directories, uint32_t storageId, uint32_t folderId);
+ 
+ 	std::unique_ptr<MtpNode> getNode(const FilesystemPath& path);
+ 	void getattr(struct stat& info);
+--- a/src/MtpFuseContext.cpp
++++ b/src/MtpFuseContext.cpp
+@@ -30,7 +30,7 @@
+ 
+ std::unique_ptr<MtpNode> MtpFuseContext::getNode(const FilesystemPath& path)
+ {
+-	std::unique_ptr<MtpNode> root(new MtpRoot(*m_device, m_cache));
++	std::unique_ptr<MtpNode> root(new MtpRoot(*m_device, m_cache, m_directories));
+ 	if (path.Head()!="/")
+ 		throw FileNotFound(path.str());
+ 	if (path.str()=="/")
+--- a/src/MtpFuseContext.h
++++ b/src/MtpFuseContext.h
+@@ -43,6 +43,7 @@
+ 	gid_t						m_gid;
+ 	std::unique_ptr<MtpDevice>	m_device;
+ 	MtpMetadataCache 		  	m_cache;
++	MtpDirectoryTransactions m_directories;
+ };
+ 
+ 
+--- a/src/MtpLocalFileCopy.cpp
++++ b/src/MtpLocalFileCopy.cpp
+@@ -19,35 +19,16 @@
+  * licensing@fsf.org
+  */
+ #include "MtpLocalFileCopy.h"
++#include "MtpRecovery.h"
+ #include "mtpFilesystemErrors.h"
+ #include <sys/stat.h>
+ #include <iostream>
+ #include <unistd.h>
+-#include <fcntl.h>
+-#include <cstdlib>
+-#include <memory>
+ #include <sstream>
+ 
+-// Names from the device are hex encoded so recovery records remain line oriented.
+-static std::string hexName(const std::string& name)
+-{
+-	const char* digits = "0123456789abcdef";
+-	std::string result;
+-	for (unsigned char byte : name)
+-	{
+-		result += digits[byte >> 4];
+-		result += digits[byte & 15];
+-	}
+-	return result;
+-}
+-
+ void MtpLocalFileCopy::initialize()
+ {
+-	const char* directory = getenv("JMTPFS_WRITEBACK_DIR");
+-	m_directory = directory ? directory : "/tmp/mtp-writeback";
+-	if (mkdir(m_directory.c_str(), 0700) && errno != EEXIST)
+-		throw CantCreateTempFile(errno);
+-	std::string pattern = m_directory + "/cache-XXXXXX";
++	std::string pattern = MtpRecovery::directory() + "/cache-XXXXXX";
+ 	std::vector<char> name(pattern.begin(), pattern.end());
+ 	name.push_back(0);
+ 	int fd = mkstemp(name.data());
+@@ -104,18 +85,6 @@
+ 		std::cerr << "Remove MTP cache " << m_cachePath << ": " << strerror(errno) << std::endl;
+ }
+ 
+-void MtpLocalFileCopy::syncDirectory()
+-{
+-	int fd = open(m_directory.c_str(), O_RDONLY | O_DIRECTORY);
+-	if (fd < 0)
+-		throw WriteError(errno);
+-	int result = fsync(fd);
+-	int error = errno;
+-	close(fd);
+-	if (result)
+-		throw WriteError(error);
+-}
+-
+ void MtpLocalFileCopy::record(Stage stage)
+ {
+ 	m_stage = stage;
+@@ -129,23 +98,13 @@
+ 		<< "target_id=" << m_target.id << "\n"
+ 		<< "source_parent_id=" << m_source.parentId << "\n"
+ 		<< "source_storage_id=" << m_source.storageId << "\n"
+-		<< "source_name_hex=" << hexName(m_source.name) << "\n"
++		<< "source_name_hex=" << MtpRecovery::hexName(m_source.name) << "\n"
+ 		<< "parent_id=" << m_target.parentId << "\n"
+ 		<< "storage_id=" << m_target.storageId << "\n"
+-		<< "target_name_hex=" << hexName(m_target.name) << "\n"
+-		<< "upload_name_hex=" << hexName(m_uploadName) << "\n"
+-		<< "backup_name_hex=" << hexName(m_backupName) << "\n";
+-	std::string next = m_recordPath + ".next";
+-	std::unique_ptr<FILE, int (*)(FILE*)> output(fopen(next.c_str(), "w"), fclose);
+-	if (!output)
+-		throw WriteError(errno);
+-	std::string content = text.str();
+-	if (fwrite(content.data(), 1, content.size(), output.get()) != content.size()
+-		|| fflush(output.get()) || fsync(fileno(output.get())))
+-		throw WriteError(errno);
+-	if (rename(next.c_str(), m_recordPath.c_str()))
+-		throw WriteError(errno);
+-	syncDirectory();
++		<< "target_name_hex=" << MtpRecovery::hexName(m_target.name) << "\n"
++		<< "upload_name_hex=" << MtpRecovery::hexName(m_uploadName) << "\n"
++		<< "backup_name_hex=" << MtpRecovery::hexName(m_backupName) << "\n";
++	MtpRecovery::write(m_recordPath, text.str());
+ }
+ 
+ void MtpLocalFileCopy::syncData()
+@@ -201,17 +160,10 @@
+ 	record(RemovingSource);
+ }
+ 
+-void MtpLocalFileCopy::clearRecord()
+-{
+-	for (const std::string& path : { m_recordPath, m_recordPath + ".next" })
+-		if (unlink(path.c_str()) && errno != ENOENT)
+-			throw WriteError(errno);
+-}
+-
+ void MtpLocalFileCopy::finishRemoval()
+ {
+ 	record(Complete);
+-	clearRecord();
++	MtpRecovery::remove(m_recordPath);
+ 	m_stage = Unlinked;
+ }
+ 
+@@ -277,7 +229,7 @@
+ 		m_device.DeleteObject(m_remoteId);
+ 	}
+ 	record(Complete);
+-	clearRecord();
++	MtpRecovery::remove(m_recordPath);
+ 	m_remoteId = m_replacementId;
+ 	m_metadata = uploaded;
+ 	m_metadata.name = m_target.name;
+--- a/src/MtpLocalFileCopy.h
++++ b/src/MtpLocalFileCopy.h
+@@ -64,11 +64,9 @@
+ 	void prepare(const MtpFileInfo& target, const MtpFileInfo& source, Operation operation, Stage stage = Dirty);
+ 	void writeback(const MtpFileInfo& target, const MtpFileInfo& source, Operation operation, MtpLocalFileCopy* replaced);
+ 	void requireMutable() const;
+-	void clearRecord();
+ 	void beginWrite();
+ 	void syncData();
+ 	void record(Stage stage);
+-	void syncDirectory();
+ 
+ 	Stage m_stage;
+ 	Operation m_operation;
+@@ -76,7 +74,6 @@
+ 	MtpFileInfo m_target;
+ 	MtpFileInfo m_source;
+ 	uint32_t m_replacementId;
+-	std::string m_directory;
+ 	std::string m_cachePath;
+ 	std::string m_recordPath;
+ 	std::string m_uploadName;
+--- a/src/MtpNode.cpp
++++ b/src/MtpNode.cpp
+@@ -20,7 +20,7 @@
+  */
+ #include "MtpNode.h"
+ #include "mtpFilesystemErrors.h"
+-MtpNode::MtpNode(MtpDevice& device, MtpMetadataCache& cache, uint32_t id) : m_device(device), m_cache(cache), m_id(id)
++MtpNode::MtpNode(MtpDevice& device, MtpMetadataCache& cache, MtpDirectoryTransactions& directories, uint32_t id) : m_device(device), m_cache(cache), m_directories(directories), m_id(id)
+ {
+ }
+ 
+--- a/src/MtpNode.h
++++ b/src/MtpNode.h
+@@ -23,6 +23,7 @@
+ #define MTPNODE_H_
+ 
+ #include "MtpMetadataCache.h"
++#include "MtpDirectoryTransactions.h"
+ #include "MtpFilesystemPath.h"
+ #include "MtpDevice.h"
+ #include "FuseHeader.h"
+@@ -34,7 +35,7 @@
+ class MtpNode : public MtpMetadataCacheFiller
+ {
+ public:
+-	MtpNode(MtpDevice& device, MtpMetadataCache& cache, uint32_t id);
++	MtpNode(MtpDevice& device, MtpMetadataCache& cache, MtpDirectoryTransactions& directories, uint32_t id);
+ 	virtual ~MtpNode();
+ 
+ 	virtual std::vector<std::string> readdir();
+@@ -76,6 +77,7 @@
+ 
+ 	MtpDevice&					m_device;
+ 	MtpMetadataCache&			m_cache;
++	MtpDirectoryTransactions& m_directories;
+ 	uint32_t					m_id;
+ };
+ 
+--- /dev/null
++++ b/src/MtpRecovery.cpp
+@@ -0,0 +1,97 @@
++/*
++ * MtpRecovery.cpp
++ *
++ *      Based on jmtpfs by Jason Ferrara
++ *
++ * This software is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 3 as published by the Free Software Foundation.
++ *
++ * This software is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this library; if not, write to the
++ * Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
++ * Boston, MA 02111-1301, USA.
++ * licensing@fsf.org
++ */
++
++#include "MtpRecovery.h"
++#include "mtpFilesystemErrors.h"
++#include <sys/stat.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <cstdlib>
++#include <memory>
++#include <vector>
++
++std::string MtpRecovery::directory()
++{
++	const char* value = getenv("JMTPFS_WRITEBACK_DIR");
++	std::string path = value ? value : "/tmp/mtp-writeback";
++	if (mkdir(path.c_str(), 0700) && errno != EEXIST)
++		throw CantCreateTempFile(errno);
++	return path;
++}
++
++std::string MtpRecovery::hexName(const std::string& name)
++{
++	const char* digits = "0123456789abcdef";
++	std::string result;
++	for (unsigned char byte : name)
++	{
++		result += digits[byte >> 4];
++		result += digits[byte & 15];
++	}
++	return result;
++}
++
++std::string MtpRecovery::newDirectoryRecord()
++{
++	std::string pattern = directory() + "/directory-XXXXXX.record";
++	std::vector<char> name(pattern.begin(), pattern.end());
++	name.push_back(0);
++	int fd = mkstemps(name.data(), 7);
++	if (fd < 0)
++		throw CantCreateTempFile(errno);
++	close(fd);
++	return name.data();
++}
++
++static void syncDirectory(const std::string& path)
++{
++	std::string directory = path.substr(0, path.find_last_of('/'));
++	int fd = open(directory.c_str(), O_RDONLY | O_DIRECTORY);
++	if (fd < 0)
++		throw WriteError(errno);
++	int result = fsync(fd);
++	int error = errno;
++	close(fd);
++	if (result)
++		throw WriteError(error);
++}
++
++void MtpRecovery::write(const std::string& path, const std::string& content)
++{
++	std::string next = path + ".next";
++	std::unique_ptr<FILE, int (*)(FILE*)> output(fopen(next.c_str(), "w"), fclose);
++	if (!output)
++		throw WriteError(errno);
++	if (fwrite(content.data(), 1, content.size(), output.get()) != content.size()
++		|| fflush(output.get()) || fsync(fileno(output.get())))
++		throw WriteError(errno);
++	if (rename(next.c_str(), path.c_str()))
++		throw WriteError(errno);
++	syncDirectory(path);
++}
++
++void MtpRecovery::remove(const std::string& path)
++{
++	for (const std::string& entry : { path, path + ".next" })
++		if (unlink(entry.c_str()) && errno != ENOENT)
++			throw WriteError(errno);
++	syncDirectory(path);
++}
+--- /dev/null
++++ b/src/MtpRecovery.h
+@@ -0,0 +1,35 @@
++/*
++ * MtpRecovery.h
++ *
++ *      Based on jmtpfs by Jason Ferrara
++ *
++ * This software is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 3 as published by the Free Software Foundation.
++ *
++ * This software is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this library; if not, write to the
++ * Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
++ * Boston, MA 02111-1301, USA.
++ * licensing@fsf.org
++ */
++
++#ifndef MTPRECOVERY_H_
++#define MTPRECOVERY_H_
++#include <string>
++
++// Record persistence only; callers own operation phases and object lifetimes.
++namespace MtpRecovery
++{
++	std::string directory();
++	std::string hexName(const std::string& name);
++	std::string newDirectoryRecord();
++	void write(const std::string& path, const std::string& content);
++	void remove(const std::string& path);
++}
++#endif
+--- a/src/MtpRoot.cpp
++++ b/src/MtpRoot.cpp
+@@ -23,7 +23,7 @@
+ #include "MtpStorage.h"
+ #include <limits>
+ 
+-MtpRoot::MtpRoot(MtpDevice& device, MtpMetadataCache& cache) : MtpNode(device, cache, std::numeric_limits<uint32_t>::max())
++MtpRoot::MtpRoot(MtpDevice& device, MtpMetadataCache& cache, MtpDirectoryTransactions& directories) : MtpNode(device, cache, directories, std::numeric_limits<uint32_t>::max())
+ {
+ }
+ 
+@@ -45,7 +45,7 @@
+ 	{
+ 		if (i->description == storageName)
+ 		{
+-			std::unique_ptr<MtpNode> storageDevice(new MtpStorage(m_device, m_cache, i->id));
++			std::unique_ptr<MtpNode> storageDevice(new MtpStorage(m_device, m_cache, m_directories, i->id));
+ 			FilesystemPath childPath = path.Body();
+ 			if (childPath.Empty())
+ 				return storageDevice;
+--- a/src/MtpRoot.h
++++ b/src/MtpRoot.h
+@@ -27,7 +27,7 @@
+ class MtpRoot : public MtpNode
+ {
+ public:
+-	MtpRoot(MtpDevice& device, MtpMetadataCache& cache);
++	MtpRoot(MtpDevice& device, MtpMetadataCache& cache, MtpDirectoryTransactions& directories);
+ 
+ 	std::unique_ptr<MtpNode> getNode(const FilesystemPath& path);
+ 	void getattr(struct stat& info);
+--- a/src/MtpStorage.cpp
++++ b/src/MtpStorage.cpp
+@@ -22,14 +22,14 @@
+ #include "mtpFilesystemErrors.h"
+ #include <iostream>
+ 
+-MtpStorage::MtpStorage(MtpDevice& device, MtpMetadataCache& cache, uint32_t id) : MtpFolder(device, cache, id, 0)
++MtpStorage::MtpStorage(MtpDevice& device, MtpMetadataCache& cache, MtpDirectoryTransactions& directories, uint32_t id) : MtpFolder(device, cache, directories, id, 0)
+ {
+ 
+ }
+ 
+ std::unique_ptr<MtpNode> MtpStorage::Clone()
+ {
+-	return std::unique_ptr<MtpNode>(new MtpStorage(m_device, m_cache, m_id));
++	return std::unique_ptr<MtpNode>(new MtpStorage(m_device, m_cache, m_directories, m_id));
+ }
+ 
+ 
+--- a/src/MtpStorage.h
++++ b/src/MtpStorage.h
+@@ -27,7 +27,7 @@
+ class MtpStorage : public MtpFolder
+ {
+ public:
+-	MtpStorage(MtpDevice& device, MtpMetadataCache& cache, uint32_t id);
++	MtpStorage(MtpDevice& device, MtpMetadataCache& cache, MtpDirectoryTransactions& directories, uint32_t id);
+ 
+ 	void Remove();
+ 

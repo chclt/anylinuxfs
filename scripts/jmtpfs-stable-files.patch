@@ -1,0 +1,610 @@
+--- a/src/MtpFile.cpp
++++ b/src/MtpFile.cpp
+@@ -22,12 +22,18 @@
+ #include "mtpFilesystemErrors.h"
+ #include <errno.h>
+ 
+-MtpFile::MtpFile(MtpDevice& device,  MtpMetadataCache& cache, uint32_t id) : MtpNode(device, cache, id), m_opened(false)
++MtpFile::MtpFile(MtpDevice& device,  MtpMetadataCache& cache, uint32_t id) : MtpNode(device, cache, id), m_localFile(cache.getOpenedFile(id))
+ {
+ }
+ 
+ MtpFile::~MtpFile()
+ {
++	Close();
++}
++
++uint32_t MtpFile::Id()
++{
++	return m_localFile ? m_localFile->id() : m_id;
+ }
+ 
+ std::unique_ptr<MtpNode> MtpFile::getNode(const FilesystemPath& path)
+@@ -38,18 +44,18 @@
+ MtpNodeMetadata MtpFile::getMetadata()
+ {
+ 	MtpNodeMetadata md;
+-	md.self = m_device.GetFileInfo(m_id);
++	md.self = m_device.GetFileInfo(Id());
+ 	return md;
+ }
+ 
+ void MtpFile::getattr(struct stat& info)
+ {
+-	MtpNodeMetadata md = m_cache.getItem(m_id, *this);
++	MtpNodeMetadata md = m_cache.getItem(Id(), *this);
+ 
+ 	info.st_mode = S_IFREG | 0644;
+ 	info.st_nlink = 1;
+ 	info.st_mtime = md.self.modificationdate;
+-	MtpLocalFileCopy* localFile = m_cache.getOpenedFile(m_id);
++	std::shared_ptr<MtpLocalFileCopy> localFile = m_cache.getOpenedFile(Id());
+ 	if (localFile)
+ 	{
+ 		info.st_size = localFile->getSize();
+@@ -61,63 +67,57 @@
+ 
+ void MtpFile::Open()
+ {
+-	m_cache.openFile(m_device, m_id);
++	m_localFile = m_cache.openFile(m_device, Id());
+ }
+ 
+ int MtpFile::Read(char *buf, size_t size, off_t offset)
+ {
+-	MtpLocalFileCopy* localFile = m_cache.openFile(m_device, m_id);
+-
+-	localFile->seek(offset);
+-	return localFile->read(buf, size);
+-
++	m_localFile->seek(offset);
++	return m_localFile->read(buf, size);
+ }
+ 
+ int MtpFile::Write(const char* buf, size_t size, off_t offset)
+ {
+-
+-	MtpLocalFileCopy* localFile = m_cache.openFile(m_device, m_id);
+-	localFile->seek(offset);
+-//	m_cache.clearItem(m_id);
+-	return localFile->write(buf, size);
++	m_localFile->seek(offset);
++	return m_localFile->write(buf, size);
+ }
+ 
+ void MtpFile::Fsync()
+ {
+ 	uint32_t parentId = GetParentNodeId();
+-	m_cache.clearItem(m_id);
+-	m_id = m_cache.closeFile(m_id);
++	uint32_t oldId = Id();
++	m_localFile->sync();
++	m_cache.updateFile(oldId, m_localFile);
++	m_cache.clearItem(oldId);
++	m_cache.clearItem(Id());
+ 	m_cache.clearItem(parentId);
+ }
+ 
+ void MtpFile::Close()
+ {
+-	Fsync();
++	if (m_localFile)
++	{
++		m_id = Id();
++		m_localFile.reset();
++		m_cache.closeFile(m_id);
++	}
+ }
+ 
+ void MtpFile::Truncate(off_t length)
+ {
+-
+-	struct stat info;
+-	getattr(info);
+-	if (info.st_size == length)
++	Open();
++	if (m_localFile->getSize() == length)
+ 		return;
+-	uint32_t parentId = GetParentNodeId();
+-	MtpLocalFileCopy* localFile = m_cache.openFile(m_device, m_id);
+-	localFile->truncate(length);
+-	m_id = m_cache.closeFile(m_id);
+-	m_cache.clearItem(m_id);
+-	m_cache.clearItem(parentId);
++	m_localFile->truncate(length);
++	Fsync();
+ }
+-
+-
+ 
+ void MtpFile::Remove()
+ {
+ 	uint32_t parentId = GetParentNodeId();
+-	m_device.DeleteObject(m_id);
++	m_device.DeleteObject(Id());
+ 	m_cache.clearItem(parentId);
+-	m_cache.clearItem(m_id);
++	m_cache.clearItem(Id());
+ 
+ }
+ 
+@@ -125,8 +125,9 @@
+ {
+ 	if (newName.length() > MAX_MTP_NAME_LENGTH)
+ 		throw MtpNameTooLong();
++	Open();
+ 	Fsync();
+-	MtpNodeMetadata md = m_cache.getItem(m_id, *this);
++	MtpNodeMetadata md = m_cache.getItem(Id(), *this);
+ 	uint32_t parentId = GetParentNodeId();
+ 	/* This true in place rename seems to confuse apps on the android device. The Gallery app
+ 	 * for example, won't notice image files that have been renamed. So to prevent this strangeness
+@@ -140,14 +141,16 @@
+ 	*/
+ 	{
+ 		//we have to do a copy and delete
+-		MtpLocalFileCopy* localFile = m_cache.openFile(m_device, md.self.id);
++		std::shared_ptr<MtpLocalFileCopy> localFile = m_localFile;
+ 		NewLIBMTPFile newFile(newName, newParent.FolderId(), newParent.StorageId(), localFile->getSize());
+ 		localFile->CopyTo(m_device, newFile);
+ 		m_cache.clearItem(md.self.id);
+ 		m_cache.clearItem(((LIBMTP_file_t*)newFile)->item_id);
+ 		m_device.DeleteObject(md.self.id);
+-		m_id = ((LIBMTP_file_t*)newFile)->item_id;
++		localFile->setId(((LIBMTP_file_t*)newFile)->item_id);
++		m_cache.updateFile(md.self.id, localFile);
+ 
+ 	}
++	m_cache.clearItem(newParent.Id());
+ 	m_cache.clearItem(parentId);
+ }
+--- a/src/MtpFile.h
++++ b/src/MtpFile.h
+@@ -34,6 +34,7 @@
+ 	std::unique_ptr<MtpNode> getNode(const FilesystemPath& path);
+ 	void getattr(struct stat& info);
+ 
++	uint32_t Id();
+ 	void Open();
+ 	void Close();
+ 	int Read(char *buf, size_t size, off_t offset);
+@@ -47,10 +48,7 @@
+ 	MtpNodeMetadata getMetadata();
+ 
+ protected:
+-	MtpFileInfo	m_info;
+-	bool		m_opened;
+-	FILE*		m_localFile;
+-	bool		m_needWrite;
++	std::shared_ptr<MtpLocalFileCopy> m_localFile;
+ };
+ 
+ 
+--- a/src/MtpLocalFileCopy.cpp
++++ b/src/MtpLocalFileCopy.cpp
+@@ -30,55 +30,46 @@
+ 	m_localFile = tmpfile();
+ 	if (m_localFile == 0)
+ 		throw CantCreateTempFile(errno);
+-	m_device.GetFile(m_remoteId, fileno(m_localFile));
++	try
++	{
++		m_device.GetFile(m_remoteId, fileno(m_localFile));
++	}
++	catch (...)
++	{
++		fclose(m_localFile);
++		throw;
++	}
+ 
+ }
+ 
+ MtpLocalFileCopy::~MtpLocalFileCopy()
+ {
+-	close();
++	fclose(m_localFile);
+ }
+ 
+-
+-uint32_t MtpLocalFileCopy::close()
++void MtpLocalFileCopy::sync()
+ {
+-	if (m_localFile)
+-	{
+-		if (m_needWriteBack)
+-		{
+-			m_needWriteBack = false;
+-			try
+-			{
+-				fflush(m_localFile);
+-				if (fseek(m_localFile, 0, SEEK_SET))
+-					throw WriteError(errno);
+-				struct stat tempInfo;
+-				if (fstat(fileno(m_localFile), &tempInfo))
+-					throw ReadError(errno);
+-				MtpFileInfo remoteInfo = m_device.GetFileInfo(m_remoteId);
+-				NewLIBMTPFile newFile(remoteInfo.name, remoteInfo.parentId, remoteInfo.storageId, tempInfo.st_size);
+-				m_device.DeleteObject(m_remoteId);
+-				std::cout << "************ sending file" << std::endl;
+-				m_device.SendFile(newFile, fileno(m_localFile));
+-				m_remoteId = ((LIBMTP_file_t*)newFile)->item_id;
+-			}
+-			catch(...)
+-			{
+-				fclose(m_localFile);
+-				m_localFile=0;
+-				throw;
+-			}
+-		}
+-
+-		fclose(m_localFile);
+-		m_localFile = 0;
+-	}
+-	return m_remoteId;
++	if (!m_needWriteBack)
++		return;
++	if (fflush(m_localFile))
++		throw WriteError(errno);
++	if (fseek(m_localFile, 0, SEEK_SET))
++		throw WriteError(errno);
++	struct stat tempInfo;
++	if (fstat(fileno(m_localFile), &tempInfo))
++		throw ReadError(errno);
++	MtpFileInfo remoteInfo = m_device.GetFileInfo(m_remoteId);
++	NewLIBMTPFile newFile(remoteInfo.name, remoteInfo.parentId, remoteInfo.storageId, tempInfo.st_size);
++	m_device.DeleteObject(m_remoteId);
++	m_device.SendFile(newFile, fileno(m_localFile));
++	m_remoteId = ((LIBMTP_file_t*)newFile)->item_id;
++	m_needWriteBack = false;
+ }
+ 
+ off_t MtpLocalFileCopy::getSize()
+ {
+-	fflush(m_localFile);
++	if (fflush(m_localFile))
++		throw WriteError(errno);
+ 	struct stat tempInfo;
+ 	if (fstat(fileno(m_localFile), &tempInfo))
+ 			throw ReadError(errno);
+@@ -120,7 +111,8 @@
+ 
+ void MtpLocalFileCopy::CopyTo(MtpDevice& device, NewLIBMTPFile& destination)
+ {
+-	fflush(m_localFile);
++	if (fflush(m_localFile))
++		throw WriteError(errno);
+ 	if (fseek(m_localFile, 0, SEEK_SET))
+ 		throw WriteError(errno);
+ 	struct stat tempInfo;
+--- a/src/MtpLocalFileCopy.h
++++ b/src/MtpLocalFileCopy.h
+@@ -30,12 +30,11 @@
+ 	MtpLocalFileCopy(MtpDevice& device, uint32_t id);
+ 	~MtpLocalFileCopy();
+ 
+-	/*
+-	 * Close the local copy and write changes back to the remote if needed.
+-	 * The return value is the id for the remote file, which may have
+-	 * changed if we had to write back changes.
+-	 */
+-	uint32_t close();
++	// Synchronization leaves the local copy open for all existing handles.
++	void sync();
++	uint32_t id() const { return m_remoteId; }
++	void setId(uint32_t id) { m_remoteId = id; }
++	bool dirty() const { return m_needWriteBack; }
+ 
+ 	off_t getSize();
+ 
+--- a/src/MtpMetadataCache.cpp
++++ b/src/MtpMetadataCache.cpp
+@@ -34,13 +34,7 @@
+ }
+ MtpMetadataCache::~MtpMetadataCache()
+ {
+-	for(local_file_cache_type::iterator i = m_localFileCache.begin(); i != m_localFileCache.end(); i++)
+-	{
+-		delete i->second;
+-	}
+ }
+-
+-
+ 
+ MtpNodeMetadata MtpMetadataCache::getItem(uint32_t id, MtpMetadataCacheFiller& source)
+ {
+@@ -84,34 +78,35 @@
+ 	}
+ }
+ 
+-MtpLocalFileCopy* MtpMetadataCache::openFile(MtpDevice& device, uint32_t id)
++std::shared_ptr<MtpLocalFileCopy> MtpMetadataCache::openFile(MtpDevice& device, uint32_t id)
++{
++	std::shared_ptr<MtpLocalFileCopy> file = getOpenedFile(id);
++	if (!file)
++	{
++		file = std::make_shared<MtpLocalFileCopy>(device, id);
++		m_localFileCache[id] = file;
++	}
++	return file;
++}
++
++std::shared_ptr<MtpLocalFileCopy> MtpMetadataCache::getOpenedFile(uint32_t id)
+ {
+ 	local_file_cache_type::iterator i = m_localFileCache.find(id);
+ 	if (i != m_localFileCache.end())
+ 		return i->second;
+-	MtpLocalFileCopy* newFile = new MtpLocalFileCopy(device, id);
+-	m_localFileCache[id] = newFile;
+-	return newFile;
++	return std::shared_ptr<MtpLocalFileCopy>();
+ }
+ 
+-MtpLocalFileCopy* MtpMetadataCache::getOpenedFile(uint32_t id)
++void MtpMetadataCache::updateFile(uint32_t oldId, const std::shared_ptr<MtpLocalFileCopy>& file)
++{
++	m_localFileCache.erase(oldId);
++	m_localFileCache[file->id()] = file;
++}
++
++void MtpMetadataCache::closeFile(uint32_t id)
+ {
+ 	local_file_cache_type::iterator i = m_localFileCache.find(id);
+-	if (i != m_localFileCache.end())
+-		return i->second;
+-	else
+-		return 0;
++	// Only the cache owns this clean copy; other opens keep their own references.
++	if (i != m_localFileCache.end() && i->second.use_count() == 1 && !i->second->dirty())
++		m_localFileCache.erase(i);
+ }
+-
+-uint32_t MtpMetadataCache::closeFile(uint32_t id)
+-{
+-	local_file_cache_type::iterator i = m_localFileCache.find(id);
+-	if (i != m_localFileCache.end())
+-	{
+-		uint32_t newId = i->second->close();
+-		delete i->second;
+-		m_localFileCache.erase(i);
+-		return newId;
+-	}
+-	return id;
+-}
+--- a/src/MtpMetadataCache.h
++++ b/src/MtpMetadataCache.h
+@@ -25,6 +25,7 @@
+ #include "MtpNodeMetadata.h"
+ #include "MtpLocalFileCopy.h"
+ 
++#include <memory>
+ #include <list>
+ #include <unordered_map>
+ 
+@@ -45,10 +46,10 @@
+ 	MtpNodeMetadata getItem(uint32_t id, MtpMetadataCacheFiller& source);
+ 	void clearItem(uint32_t id);
+ 
+-	MtpLocalFileCopy* openFile(MtpDevice& device, uint32_t id);
+-	MtpLocalFileCopy* getOpenedFile(uint32_t id);
+-
+-	uint32_t closeFile(uint32_t id);
++	std::shared_ptr<MtpLocalFileCopy> openFile(MtpDevice& device, uint32_t id);
++	std::shared_ptr<MtpLocalFileCopy> getOpenedFile(uint32_t id);
++	void updateFile(uint32_t oldId, const std::shared_ptr<MtpLocalFileCopy>& file);
++	void closeFile(uint32_t id);
+ 
+ private:
+ 	void clearOld();
+@@ -60,7 +61,7 @@
+ 
+ 	typedef std::list<CacheEntry> cache_type;
+ 	typedef std::unordered_map<uint32_t, cache_type::iterator> cache_lookup_type;
+-	typedef std::unordered_map<uint32_t, MtpLocalFileCopy*> local_file_cache_type;
++	typedef std::unordered_map<uint32_t, std::shared_ptr<MtpLocalFileCopy> > local_file_cache_type;
+ 
+ 	cache_type				m_cache;
+ 	cache_lookup_type		m_cacheLookup;
+--- a/src/MtpNode.cpp
++++ b/src/MtpNode.cpp
+@@ -36,7 +36,7 @@
+ 
+ uint32_t MtpNode::GetParentNodeId()
+ {
+-	MtpNodeMetadata md = m_cache.getItem(m_id, *this);
++	MtpNodeMetadata md = m_cache.getItem(Id(), *this);
+ 
+ 	if (md.self.parentId == 0)
+ 		return md.self.storageId;
+@@ -69,6 +69,11 @@
+ void MtpNode::Close()
+ {
+ 	throw NotImplemented("Close");
++}
++
++void MtpNode::Fsync()
++{
++	throw NotImplemented("Fsync");
+ }
+ 
+ int MtpNode::Read(char *buf, size_t size, off_t offset)
+--- a/src/MtpNode.h
++++ b/src/MtpNode.h
+@@ -48,6 +48,7 @@
+ 
+ 	virtual void Open();
+ 	virtual void Close();
++	virtual void Fsync();
+ 	virtual int Read(char *buf, size_t size, off_t offset);
+ 	virtual int Write(const char* buf, size_t size, off_t offset);
+ 
+--- a/src/jmtpfs.cpp
++++ b/src/jmtpfs.cpp
+@@ -28,6 +28,7 @@
+ 
+ #include <iostream>
+ #include <cstddef>
++#include <cstdint>
+ #include <errno.h>
+ #include <sstream>
+ #include <iomanip>
+@@ -106,34 +107,39 @@
+ }
+ 
+ 
+-extern "C" int jmtpfs_open(const char *pathStr, struct fuse_file_info *)
+-{
+-	FUSE_ERROR_BLOCK_START
+-
+-	FilesystemPath path(pathStr);
+-	context->getNode(path)->Open();
+-	return 0;
+-
+-	FUSE_ERROR_BLOCK_END
+-}
+-
+-extern "C" int jmtpfs_release(const char *pathStr, struct fuse_file_info *)
+-{
+-	FUSE_ERROR_BLOCK_START
+-
+-	FilesystemPath path(pathStr);
+-	context->getNode(path)->Close();
+-	return 0;
+-
+-	FUSE_ERROR_BLOCK_END
+-}
+-
+-extern "C" int jmtpfs_read(const char *pathStr, char *buf, size_t  size, off_t offset, struct fuse_file_info *)
+-{
+-	FUSE_ERROR_BLOCK_START
+-
+-	FilesystemPath path(pathStr);
+-	return context->getNode(path)->Read(buf,size,offset);
++static MtpNode* openedFile(struct fuse_file_info* info)
++{
++	return reinterpret_cast<MtpNode*>(static_cast<uintptr_t>(info->fh));
++}
++
++extern "C" int jmtpfs_open(const char *pathStr, struct fuse_file_info *info)
++{
++	FUSE_ERROR_BLOCK_START
++
++	FilesystemPath path(pathStr);
++	std::unique_ptr<MtpNode> node = context->getNode(path);
++	node->Open();
++	info->fh = reinterpret_cast<uintptr_t>(node.release());
++	return 0;
++
++	FUSE_ERROR_BLOCK_END
++}
++
++extern "C" int jmtpfs_release(const char *, struct fuse_file_info *info)
++{
++	FUSE_ERROR_BLOCK_START
++
++	delete openedFile(info);
++	return 0;
++
++	FUSE_ERROR_BLOCK_END
++}
++
++extern "C" int jmtpfs_read(const char *, char *buf, size_t size, off_t offset, struct fuse_file_info *info)
++{
++	FUSE_ERROR_BLOCK_START
++
++	return openedFile(info)->Read(buf, size, offset);
+ 
+ 	FUSE_ERROR_BLOCK_END
+ }
+@@ -170,17 +176,17 @@
+ 	n->CreateFile(path.Tail());
+ 	n = context->getNode(path);
+ 	n->Open();
+-	return 0;
+-
+-	FUSE_ERROR_BLOCK_END
+-}
+-
+-extern "C" int jmtpfs_write(const char *pathStr, const char *data, size_t size, off_t offset, struct fuse_file_info *)
+-{
+-	FUSE_ERROR_BLOCK_START
+-
+-	FilesystemPath path(pathStr);
+-	return context->getNode(path)->Write(data, size, offset);
++	fileInfo->fh = reinterpret_cast<uintptr_t>(n.release());
++	return 0;
++
++	FUSE_ERROR_BLOCK_END
++}
++
++extern "C" int jmtpfs_write(const char *, const char *data, size_t size, off_t offset, struct fuse_file_info *info)
++{
++	FUSE_ERROR_BLOCK_START
++
++	return openedFile(info)->Write(data, size, offset);
+ 
+ 	FUSE_ERROR_BLOCK_END
+ }
+@@ -207,17 +213,42 @@
+ 	FUSE_ERROR_BLOCK_END
+ }
+ 
+-extern "C" int jmtpfs_flush(const char *pathStr, struct fuse_file_info *)
+-{
+-	FUSE_ERROR_BLOCK_START
+-
+-	FilesystemPath path(pathStr);
+-	context->getNode(path)->Close();
+-	return 0;
+-
+-	FUSE_ERROR_BLOCK_END
+-}
+-
++extern "C" int jmtpfs_flush(const char *, struct fuse_file_info *info)
++{
++	FUSE_ERROR_BLOCK_START
++
++	openedFile(info)->Fsync();
++	return 0;
++
++	FUSE_ERROR_BLOCK_END
++}
++
++
++extern "C" int jmtpfs_fsync(const char *, int, struct fuse_file_info *info)
++{
++	FUSE_ERROR_BLOCK_START
++	openedFile(info)->Fsync();
++	return 0;
++	FUSE_ERROR_BLOCK_END
++}
++
++extern "C" int jmtpfs_ftruncate(const char *, off_t length, struct fuse_file_info *info)
++{
++	FUSE_ERROR_BLOCK_START
++	openedFile(info)->Truncate(length);
++	return 0;
++	FUSE_ERROR_BLOCK_END
++}
++
++extern "C" int jmtpfs_fgetattr(const char *, struct stat* attrs, struct fuse_file_info *info)
++{
++	FUSE_ERROR_BLOCK_START
++	openedFile(info)->getattr(*attrs);
++	attrs->st_uid = context->uid();
++	attrs->st_gid = context->gid();
++	return 0;
++	FUSE_ERROR_BLOCK_END
++}
+ 
+ extern "C" int jmtpfs_rename(const char *pathStr, const char *newPathStr)
+ {
+@@ -318,6 +349,9 @@
+ 	jmtpfs_oper.truncate = jmtpfs_truncate;
+ 	jmtpfs_oper.unlink = jmtpfs_unlink;
+ 	jmtpfs_oper.flush = jmtpfs_flush;
++	jmtpfs_oper.fsync = jmtpfs_fsync;
++	jmtpfs_oper.ftruncate = jmtpfs_ftruncate;
++	jmtpfs_oper.fgetattr = jmtpfs_fgetattr;
+ 	jmtpfs_oper.rename = jmtpfs_rename;
+ 	jmtpfs_oper.statfs = jmtpfs_statfs;
+ 	jmtpfs_oper.chmod = jmtpfs_chmod;

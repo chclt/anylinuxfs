@@ -1,13 +1,10 @@
-//! Read-only MTP mount lifecycle. USB transport and NFS exports have their own owners.
+//! MTP mount lifecycle. USB transport and NFS exports have their own owners.
 #[cfg(target_os = "linux")]
 use anyhow::Context;
 use common_utils::Deferred;
 
-#[cfg(target_os = "linux")]
-const FUSE_OPTIONS: &str = "ro,allow_other,noforget";
-
 #[cfg(any(target_os = "linux", test))]
-fn mount_ready(mountinfo: &str, mount_point: &str) -> bool {
+fn mount_ready(mountinfo: &str, mount_point: &str, mode: &str) -> bool {
     let escaped = mount_point
         .replace('\\', "\\134")
         .replace(' ', "\\040")
@@ -20,7 +17,7 @@ fn mount_ready(mountinfo: &str, mount_point: &str) -> bool {
         let fields: Vec<_> = mount.split_whitespace().collect();
         fields.len() >= 6
             && fields[4] == escaped
-            && fields[5].split(',').any(|option| option == "ro")
+            && fields[5].split(',').any(|option| option == mode)
             && matches!(
                 filesystem.split_whitespace().next(),
                 Some("fuse" | "fuse.jmtpfs")
@@ -32,6 +29,8 @@ fn mount_ready(mountinfo: &str, mount_point: &str) -> bool {
 pub(crate) fn mount(
     bus_id: &str,
     mount_point: &str,
+    read_only: bool,
+    owner: (u32, u32),
     deferred: &mut Deferred<'_>,
 ) -> anyhow::Result<()> {
     use std::{
@@ -40,19 +39,28 @@ pub(crate) fn mount(
         thread,
         time::{Duration, Instant},
     };
-    const DRIVER: &str = "/usr/local/bin/jmtpfs";
+    const DRIVER: &str = "/usr/local/libexec/anylinuxfs/jmtpfs-writeback-v1";
     fs::metadata(DRIVER).context(
-        "MTP guest helper is missing; run scripts/prepare-mtp-guest.sh inside the Linux guest",
+        "MTP writeback helper v1 is missing; run scripts/prepare-mtp-guest.sh inside the Linux guest",
     )?;
     fs::metadata("/dev/fuse").context("Guest kernel needs CONFIG_FUSE_FS")?;
 
     let device = crate::usbip::attach(bus_id, deferred).context("Attach MTP USB device")?;
+    let mode = if read_only { "ro" } else { "rw" };
+    let options = format!(
+        "{mode},allow_other,noforget,uid={},gid={}",
+        owner.0, owner.1
+    );
     let child = Command::new(DRIVER)
-        .args(["-f", "-s", "-o", FUSE_OPTIONS])
+        .args(["-f", "-s", "-o", &options])
+        .env(
+            "JMTPFS_WRITEBACK_DIR",
+            std::path::Path::new("/tmp").join(common_utils::MTP_WRITEBACK_DIR),
+        )
         .arg(format!("-device={},{}", device.bus, device.number))
         .arg(mount_point)
         .spawn()
-        .context("Start read-only MTP filesystem")?;
+        .context("Start MTP filesystem")?;
 
     let child = std::cell::RefCell::new(child);
     let mut cleanup = Deferred::new();
@@ -70,7 +78,7 @@ pub(crate) fn mount(
         }
         // Reading mountinfo does not issue FUSE requests that can block on a phone.
         let mounts = fs::read_to_string("/proc/self/mountinfo").context("Read MTP mount status")?;
-        if mount_ready(&mounts, mount_point) {
+        if mount_ready(&mounts, mount_point, mode) {
             break;
         }
         if Instant::now() >= deadline {
@@ -85,7 +93,7 @@ pub(crate) fn mount(
     let mut child = child.into_inner();
     let mount_point = mount_point.to_owned();
     deferred.add(move || stop(&mut child, &mount_point));
-    println!("MTP device {bus_id} mounted read-only.");
+    println!("MTP device {bus_id} mounted {mode}.");
     Ok(())
 }
 
@@ -117,6 +125,8 @@ fn stop(child: &mut std::process::Child, mount_point: &str) {
 pub(crate) fn mount(
     _bus_id: &str,
     _mount_point: &str,
+    _read_only: bool,
+    _owner: (u32, u32),
     _deferred: &mut Deferred<'_>,
 ) -> anyhow::Result<()> {
     anyhow::bail!("MTP requires a Linux guest")
@@ -127,17 +137,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn readiness_requires_read_only_fuse_at_exact_mount_point() {
+    fn readiness_requires_requested_mode_and_fuse_at_exact_mount_point() {
         let line = "31 20 0:33 / /mnt/My\\040Phone ro,nosuid - fuse.jmtpfs jmtpfs rw,user_id=0";
-        assert!(mount_ready(line, "/mnt/My Phone"));
-        assert!(!mount_ready(line, "/mnt/My"));
+        assert!(mount_ready(line, "/mnt/My Phone", "ro"));
+        assert!(!mount_ready(line, "/mnt/My", "ro"));
         assert!(!mount_ready(
             &line.replace("ro,nosuid", "rw,nosuid"),
-            "/mnt/My Phone"
+            "/mnt/My Phone",
+            "ro"
+        ));
+        assert!(mount_ready(
+            &line.replace("ro,nosuid", "rw,nosuid"),
+            "/mnt/My Phone",
+            "rw"
         ));
         assert!(!mount_ready(
             &line.replace("fuse.jmtpfs", "virtiofs"),
-            "/mnt/My Phone"
+            "/mnt/My Phone",
+            "ro"
         ));
     }
 }
