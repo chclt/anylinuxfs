@@ -9,23 +9,52 @@ fi
 
 revision=928fb8f2eec34232e3b2cecc121195caa8865e15
 checksum=70ab6c8ebc737ef77af316cd068ba7bed9cecbf39faa7668e9f4d102a882e9a3
+fuse_revision=fuse-2.9.9
+fuse_checksum=e57a24721177c3b3dd71cb9239ca46b4dee283db9388d48f7ccd256184982194
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 work_dir=$(mktemp -d /tmp/alfs-jmtpfs.XXXXXX)
 trap 'rm -rf "$work_dir"' EXIT
 apk add --no-cache fuse libmtp libmagic libstdc++
 apk add --no-cache --virtual .alfs-mtp-build build-base autoconf automake \
-    pkgconf fuse-dev libmtp-dev file-dev curl linux-headers
+    pkgconf libtool gettext-dev libmtp-dev file-dev curl linux-headers patch
 trap 'rm -rf "$work_dir"; apk del .alfs-mtp-build' EXIT
+# Keep the open-handle fix private to this single-threaded helper.
+curl -fL "https://codeload.github.com/libfuse/libfuse/tar.gz/refs/tags/$fuse_revision" \
+    -o "$work_dir/fuse.tar.gz"
+printf '%s  %s\n' "$fuse_checksum" "$work_dir/fuse.tar.gz" | sha256sum -c -
+tar -xzf "$work_dir/fuse.tar.gz" -C "$work_dir"
+fuse_dir="$work_dir/libfuse-$fuse_revision"
+cd "$fuse_dir"
+patch -p1 < "$script_dir/jmtpfs-fuse-open-handles.patch"
+autoreconf -fi
+CC=/usr/bin/gcc ./configure --disable-shared --enable-static \
+    --disable-util --disable-example --disable-mtab
+make -C lib -j"${ALFS_MTP_JOBS:-2}"
 curl -fL "https://codeload.github.com/JasonFerrara/jmtpfs/tar.gz/$revision" \
     -o "$work_dir/source.tar.gz"
 printf '%s  %s\n' "$checksum" "$work_dir/source.tar.gz" | sha256sum -c -
 tar -xzf "$work_dir/source.tar.gz" -C "$work_dir"
 cd "$work_dir/jmtpfs-$revision"
+patch -p1 < "$script_dir/jmtpfs-stable-files.patch"
+patch -p1 < "$script_dir/jmtpfs-writeback.patch"
+patch -p1 < "$script_dir/jmtpfs-file-operations.patch"
+patch -p1 < "$script_dir/jmtpfs-directory-transactions.patch"
 autoreconf -fi
 # Absolute compiler paths let GCC locate cc1/cc1plus in the guest.
+FUSE_CFLAGS="-I$fuse_dir/include -D_FILE_OFFSET_BITS=64" \
+FUSE_LIBS="$fuse_dir/lib/.libs/libfuse.a -pthread -ldl -lrt" \
 CC=/usr/bin/gcc CXX=/usr/bin/g++ ./configure --prefix=/usr/local
 make -j"${ALFS_MTP_JOBS:-2}"
-make install
+mkdir -p /usr/local/libexec/anylinuxfs
+install -m 755 src/jmtpfs /usr/local/libexec/anylinuxfs/jmtpfs-writeback-v1
 mkdir -p /usr/local/share/licenses/jmtpfs
 cp COPYING /usr/local/share/licenses/jmtpfs/COPYING
+cp "$fuse_dir/COPYING.LIB" /usr/local/share/licenses/jmtpfs/libfuse-COPYING.LIB
+cp "$script_dir/jmtpfs-fuse-open-handles.patch" /usr/local/share/licenses/jmtpfs/
+cp "$script_dir/jmtpfs-stable-files.patch" /usr/local/share/licenses/jmtpfs/
+cp "$script_dir/jmtpfs-writeback.patch" /usr/local/share/licenses/jmtpfs/
+cp "$script_dir/jmtpfs-file-operations.patch" /usr/local/share/licenses/jmtpfs/
+cp "$script_dir/jmtpfs-directory-transactions.patch" /usr/local/share/licenses/jmtpfs/
 printf '%s\n' "$revision" > /usr/local/share/licenses/jmtpfs/source-revision
-echo "MTP guest helper installed at /usr/local/bin/jmtpfs"
+printf '%s\n' "$fuse_revision" > /usr/local/share/licenses/jmtpfs/libfuse-source-revision
+echo "MTP guest helper installed at /usr/local/libexec/anylinuxfs/jmtpfs-writeback-v1"

@@ -1,0 +1,2 @@
+# Unified diff prefixes are part of the patch format, not source indentation.
+*.patch -whitespace

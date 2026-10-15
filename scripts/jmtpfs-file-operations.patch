@@ -1,0 +1,727 @@
+--- a/src/MtpDevice.cpp
++++ b/src/MtpDevice.cpp
+@@ -248,12 +248,13 @@
+ 		destination->filetype = PropertyTypeFromMimeType(mimeType);
+ }
+ 
+-void MtpDevice::SendFile(LIBMTP_file_t* destination, int fd)
++MtpFileInfo MtpDevice::SendFile(LIBMTP_file_t* destination, int fd)
+ {
+ MtpLibLock lock;
+ 
+ 	if (LIBMTP_Send_File_From_File_Descriptor(m_mtpdevice, fd, destination, 0,0))
+ 		CheckErrors(true);
++	return GetFileInfo(destination->item_id);
+ }
+ 
+ 
+@@ -265,6 +266,15 @@
+ 		CheckErrors(true);
+ 	if (!supported)
+ 		throw MtpFilesystemErrorWithErrorCode(EOPNOTSUPP, "Device does not support object filenames");
++}
++
++void MtpDevice::MoveObject(uint32_t id, uint32_t storageId, uint32_t parentId)
++{
++	MtpLibLock lock;
++	if (!LIBMTP_Check_Capability(m_mtpdevice, LIBMTP_DEVICECAP_MoveObject))
++		throw MtpFilesystemErrorWithErrorCode(EOPNOTSUPP, "Device does not support object moves");
++	if (LIBMTP_Move_Object(m_mtpdevice, id, storageId, parentId))
++		CheckErrors(true);
+ }
+ 
+ void MtpDevice::RenameFile(uint32_t id, const std::string& newName)
+--- a/src/MtpDevice.h
++++ b/src/MtpDevice.h
+@@ -91,7 +91,7 @@
+ 	MtpFileInfo(LIBMTP_file_t& info);
+ 	MtpFileInfo(uint32_t i, uint32_t p, uint32_t storage,   std::string s, LIBMTP_filetype_t t, uint64_t fs) :
+ 			id(i), parentId(p), storageId(storage), name(s), filetype(t),
+-			filesize(fs){}
++			filesize(fs), modificationdate(0){}
+ 
+ 	uint32_t id;
+ 	uint32_t parentId;
+@@ -132,10 +132,11 @@
+ 	MtpFileInfo GetFileInfo(uint32_t id);
+ 	void GetFile(uint32_t id, int fd);
+ 	void PrepareFile(LIBMTP_file_t* destination, int fd);
+-	void SendFile(LIBMTP_file_t* destination, int fd);
++	MtpFileInfo SendFile(LIBMTP_file_t* destination, int fd);
+ 	void CreateFolder(const std::string& name, uint32_t parentId, uint32_t storageId);
+ 	void DeleteObject(uint32_t id);
+ 	void RequireFileRename(LIBMTP_filetype_t type);
++	void MoveObject(uint32_t id, uint32_t storageId, uint32_t parentId);
+ 	void RenameFile(uint32_t id, const std::string& newName);
+ 	void SetObjectProperty(uint32_t id, LIBMTP_property_t property, const std::string& value);
+ 	static LIBMTP_filetype_t PropertyTypeFromMimeType(const std::string& mimeType);
+--- a/src/MtpFile.cpp
++++ b/src/MtpFile.cpp
+@@ -44,7 +44,7 @@
+ MtpNodeMetadata MtpFile::getMetadata()
+ {
+ 	MtpNodeMetadata md;
+-	md.self = m_device.GetFileInfo(Id());
++	md.self = m_localFile ? m_localFile->metadata() : m_device.GetFileInfo(Id());
+ 	return md;
+ }
+ 
+@@ -53,7 +53,7 @@
+ 	MtpNodeMetadata md = m_cache.getItem(Id(), *this);
+ 
+ 	info.st_mode = S_IFREG | 0644;
+-	info.st_nlink = 1;
++	info.st_nlink = m_localFile && m_localFile->unlinked() ? 0 : 1;
+ 	info.st_mtime = md.self.modificationdate;
+ 	std::shared_ptr<MtpLocalFileCopy> localFile = m_cache.getOpenedFile(Id());
+ 	if (localFile)
+@@ -67,7 +67,8 @@
+ 
+ void MtpFile::Open()
+ {
+-	m_localFile = m_cache.openFile(m_device, Id());
++	if (!m_localFile)
++		m_localFile = m_cache.openFile(m_device, Id());
+ }
+ 
+ int MtpFile::Read(char *buf, size_t size, off_t offset)
+@@ -85,7 +86,10 @@
+ void MtpFile::Fsync()
+ {
+ 	if (!m_localFile->dirty())
++	{
++		m_localFile->sync();
+ 		return;
++	}
+ 	uint32_t parentId = m_localFile->parentId();
+ 	uint32_t oldId = Id();
+ 	m_localFile->sync();
+@@ -117,42 +121,43 @@
+ void MtpFile::Remove()
+ {
+ 	uint32_t parentId = GetParentNodeId();
+-	m_device.DeleteObject(Id());
+ 	m_cache.clearItem(parentId);
+ 	m_cache.clearItem(Id());
++	if (m_localFile)
++		m_localFile->beginRemoval();
++	m_device.DeleteObject(Id());
++	if (m_localFile)
++		m_localFile->finishRemoval();
+ 
+ }
+ 
+-void MtpFile::Rename(MtpNode& newParent, const std::string& newName)
++void MtpFile::Rename(MtpNode& newParent, const std::string& newName, MtpNode* target)
+ {
+ 	if (newName.length() > MAX_MTP_NAME_LENGTH)
+ 		throw MtpNameTooLong();
++	MtpFileInfo source = getMetadata().self;
++	if (source.storageId != newParent.StorageId())
++		throw MtpFilesystemErrorWithErrorCode(EXDEV, "Different MTP storage");
++	if (target)
++	{
++		struct stat attrs;
++		target->getattr(attrs);
++		if (S_ISDIR(attrs.st_mode))
++			throw MtpFilesystemErrorWithErrorCode(EISDIR, "Target is a directory");
++	}
+ 	Open();
+ 	Fsync();
+-	MtpNodeMetadata md = m_cache.getItem(Id(), *this);
+-	uint32_t parentId = GetParentNodeId();
+-	/* This true in place rename seems to confuse apps on the android device. The Gallery app
+-	 * for example, won't notice image files that have been renamed. So to prevent this strangeness
+-	 * real rename is disabled, and instead we make a copy of the file and delete the original
+-	if ((newParent.FolderId() == md.self.parentId) && (newParent.StorageId() == md.self.storageId))
+-	{
+-		// we can do a real rename
+-		m_device.RenameFile(md.self.id, newName);
+-	}
+-	else
+-	*/
+-	{
+-		//we have to do a copy and delete
+-		std::shared_ptr<MtpLocalFileCopy> localFile = m_localFile;
+-		NewLIBMTPFile newFile(newName, newParent.FolderId(), newParent.StorageId(), localFile->getSize());
+-		localFile->CopyTo(m_device, newFile);
+-		m_cache.clearItem(md.self.id);
+-		m_cache.clearItem(((LIBMTP_file_t*)newFile)->item_id);
+-		m_device.DeleteObject(md.self.id);
+-		localFile->setId(((LIBMTP_file_t*)newFile)->item_id);
+-		m_cache.updateFile(md.self.id, localFile);
+-
+-	}
++	source = getMetadata().self;
++	MtpFileInfo destination(0, newParent.FolderId(), newParent.StorageId(), newName,
++		source.filetype, m_localFile->getSize());
++	if (target)
++		destination = target->getMetadata().self;
++	uint32_t oldId = Id();
++	m_cache.clearItem(oldId);
++	m_cache.clearItem(source.parentId ? source.parentId : source.storageId);
+ 	m_cache.clearItem(newParent.Id());
+-	m_cache.clearItem(parentId);
++	std::shared_ptr<MtpLocalFileCopy> replaced = m_cache.getOpenedFile(destination.id);
++	m_localFile->relocate(destination, source, replaced.get());
++	m_cache.updateFile(oldId, m_localFile);
++	m_cache.clearItem(destination.id);
+ }
+--- a/src/MtpFile.h
++++ b/src/MtpFile.h
+@@ -43,7 +43,7 @@
+ 
+ 	void Fsync();
+ 	void Truncate(off_t length);
+-	void Rename(MtpNode& newParent, const std::string& newName);
++	void Rename(MtpNode& newParent, const std::string& newName, MtpNode* target);
+ 
+ 	MtpNodeMetadata getMetadata();
+ 
+--- a/src/MtpFolder.cpp
++++ b/src/MtpFolder.cpp
+@@ -22,7 +22,7 @@
+ #include "MtpFolder.h"
+ #include "MtpFile.h"
+ #include "mtpFilesystemErrors.h"
+-#include "TemporaryFile.h"
++
+ 
+ MtpFolder::MtpFolder(MtpDevice& device, MtpMetadataCache& cache, uint32_t storageId,
+ 		uint32_t folderId) : MtpNode(device, cache, folderId ? folderId : storageId),
+@@ -101,14 +101,23 @@
+ }
+ 
+ 
++bool MtpFolder::hasChild(const std::string& name)
++{
++	MtpNodeMetadata md = m_cache.getItem(m_id, *this);
++	for (const MtpFileInfo& child : md.children)
++		if (child.name == name)
++			return true;
++	return false;
++}
++
+ void MtpFolder::Remove()
+ {
+ 	if (readDirectory().size()>0)
+ 		throw MtpDirectoryNotEmpty();
+ 	uint32_t parentId = GetParentNodeId();
+-	m_device.DeleteObject(m_id);
+ 	m_cache.clearItem(parentId);
+ 	m_cache.clearItem(m_id);
++	m_device.DeleteObject(m_id);
+ 
+ }
+ 
+@@ -117,8 +126,10 @@
+ 	if (name.length() > MAX_MTP_NAME_LENGTH)
+ 		throw MtpNameTooLong();
+ 
++	if (hasChild(name))
++		throw MtpFilesystemErrorWithErrorCode(EEXIST, "Directory entry exists");
++	m_cache.clearItem(m_id);
+ 	m_device.CreateFolder(name, m_folderId, m_storageId);
+-	m_cache.clearItem(m_id);
+ }
+ 
+ 
+@@ -127,12 +138,13 @@
+ {
+ 	if (name.length() > MAX_MTP_NAME_LENGTH)
+ 		throw MtpNameTooLong();
+-
+-	NewLIBMTPFile newFile(name, m_folderId, m_storageId);
+-	TemporaryFile empty;
+-	m_device.SendFile(newFile, empty.FileNo());
+-	m_cache.clearItem(((LIBMTP_file_t*)newFile)->item_id);
++	if (hasChild(name))
++		throw MtpFilesystemErrorWithErrorCode(EEXIST, "Directory entry exists");
++	MtpFileInfo target(0, m_folderId, m_storageId, name, LIBMTP_FILETYPE_UNKNOWN, 0);
++	std::shared_ptr<MtpLocalFileCopy> file = std::make_shared<MtpLocalFileCopy>(m_device, target);
+ 	m_cache.clearItem(m_id);
++	file->sync();
++	m_cache.updateFile(0, file);
+ }
+ 
+ uint32_t MtpFolder::FolderId()
+@@ -145,34 +157,33 @@
+ 	return m_storageId;
+ }
+ 
+-void MtpFolder::Rename(MtpNode& newParent, const std::string& newName)
++void MtpFolder::Rename(MtpNode& newParent, const std::string& newName, MtpNode* target)
+ {
+ 	if (newName.length() > MAX_MTP_NAME_LENGTH)
+ 		throw MtpNameTooLong();
+-
+ 	MtpNodeMetadata md = m_cache.getItem(m_id, *this);
+-
++	if (newParent.StorageId() != m_storageId)
++		throw MtpFilesystemErrorWithErrorCode(EXDEV, "Different MTP storage");
++	if (target)
++	{
++		struct stat attrs;
++		target->getattr(attrs);
++		if (!S_ISDIR(attrs.st_mode))
++			throw MtpFilesystemErrorWithErrorCode(ENOTDIR, "Target is not a directory");
++		if (!target->readDirectory().empty())
++			throw MtpDirectoryNotEmpty();
++		throw MtpFilesystemErrorWithErrorCode(EOPNOTSUPP, "Replacing an MTP directory is unsupported");
++	}
++	bool moving = newParent.FolderId() != md.self.parentId;
++	bool renaming = newName != md.self.name;
++	if (moving && renaming)
++		throw MtpFilesystemErrorWithErrorCode(EOPNOTSUPP, "Move and rename the directory separately");
+ 	uint32_t parentId = GetParentNodeId();
+-	if ((newParent.FolderId() == md.self.parentId) && (newParent.StorageId() == m_storageId))
+-	{
+-		// we can do a real rename
++	m_cache.clearItem(parentId);
++	m_cache.clearItem(newParent.Id());
++	m_cache.clearItem(m_id);
++	if (moving)
++		m_device.MoveObject(m_id, m_storageId, newParent.FolderId());
++	else if (renaming)
+ 		m_device.RenameFile(m_id, newName);
+-	}
+-	else
+-	{
+-		// we have to do a copy and delete
+-		newParent.mkdir(newName);
+-		std::unique_ptr<MtpNode> destDir(newParent.getNode(FilesystemPath(newName.c_str())));
+-		std::vector<std::string> contents = readDirectory();
+-		for(std::vector<std::string>::iterator i = contents.begin(); i != contents.end(); i++)
+-		{
+-			std::unique_ptr<MtpNode> child(getNode(FilesystemPath(i->c_str())));
+-			child->Rename(*destDir, *i);
+-		}
+-		Remove();
+-	}
+-	m_cache.clearItem(newParent.Id());
+-	m_cache.clearItem(parentId);
+-
+ }
+-
+--- a/src/MtpFolder.h
++++ b/src/MtpFolder.h
+@@ -41,13 +41,14 @@
+ 	uint32_t FolderId();
+ 	uint32_t StorageId();
+ 
+-	void Rename(MtpNode& newParent, const std::string& newName);
++	void Rename(MtpNode& newParent, const std::string& newName, MtpNode* target);
+ 
+ 	MtpNodeMetadata getMetadata();
+ 
++private:
++	bool hasChild(const std::string& name);
++
+ protected:
+-
+-
+ 	std::vector<MtpFileInfo> m_files;
+ 	uint32_t m_storageId, m_folderId;
+ };
+--- a/src/MtpLocalFileCopy.cpp
++++ b/src/MtpLocalFileCopy.cpp
+@@ -41,8 +41,7 @@
+ 	return result;
+ }
+ 
+-MtpLocalFileCopy::MtpLocalFileCopy(MtpDevice& device, uint32_t id) :
+-	m_device(device), m_remoteId(id), m_stage(Clean), m_replacementId(0)
++void MtpLocalFileCopy::initialize()
+ {
+ 	const char* directory = getenv("JMTPFS_WRITEBACK_DIR");
+ 	m_directory = directory ? directory : "/tmp/mtp-writeback";
+@@ -67,14 +66,33 @@
+ 		unlink(m_cachePath.c_str());
+ 		throw CantCreateTempFile(error);
+ 	}
++}
++
++MtpLocalFileCopy::MtpLocalFileCopy(MtpDevice& device, uint32_t id) :
++	m_device(device), m_remoteId(id), m_stage(Clean), m_replacementId(0)
++{
++	initialize();
+ 	try
+ 	{
++		m_metadata = m_device.GetFileInfo(m_remoteId);
+ 		m_device.GetFile(m_remoteId, fileno(m_localFile));
+ 	}
+ 	catch (...)
+ 	{
+ 		fclose(m_localFile);
+ 		unlink(m_cachePath.c_str());
++		throw;
++	}
++}
++
++MtpLocalFileCopy::MtpLocalFileCopy(MtpDevice& device, const MtpFileInfo& target) :
++	m_device(device), m_remoteId(0), m_stage(Clean), m_replacementId(0)
++{
++	initialize();
++	try { prepare(target, target, Create); }
++	catch (...)
++	{
++		fclose(m_localFile);
+ 		throw;
+ 	}
+ }
+@@ -102,11 +120,16 @@
+ {
+ 	m_stage = stage;
+ 	static const char* stages[] = { "clean", "dirty", "uploading", "backing-up",
+-		"publishing", "cleaning-up", "complete" };
++		"publishing", "cleaning-up", "removing-source", "complete" };
++	static const char* operations[] = { "replace", "create", "rename", "unlink" };
+ 	std::ostringstream text;
+-	text << "version=1\n" << "stage=" << stages[stage] << "\n"
++	text << "version=1\n" << "operation=" << operations[m_operation] << "\n" << "stage=" << stages[stage] << "\n"
+ 		<< "original_id=" << m_remoteId << "\n"
+ 		<< "replacement_id=" << m_replacementId << "\n"
++		<< "target_id=" << m_target.id << "\n"
++		<< "source_parent_id=" << m_source.parentId << "\n"
++		<< "source_storage_id=" << m_source.storageId << "\n"
++		<< "source_name_hex=" << hexName(m_source.name) << "\n"
+ 		<< "parent_id=" << m_target.parentId << "\n"
+ 		<< "storage_id=" << m_target.storageId << "\n"
+ 		<< "target_name_hex=" << hexName(m_target.name) << "\n"
+@@ -131,36 +154,98 @@
+ 		throw WriteError(errno);
+ }
+ 
++void MtpLocalFileCopy::prepare(const MtpFileInfo& target, const MtpFileInfo& source, Operation operation, Stage stage)
++{
++	m_operation = operation;
++	m_target = target;
++	m_source = source;
++	m_replacementId = 0;
++	syncData();
++	record(stage);
++}
++
+ void MtpLocalFileCopy::beginWrite()
+ {
++	if (unlinked())
++		return;
+ 	if (m_stage == Clean)
+ 	{
+-		m_target = m_device.GetFileInfo(m_remoteId);
+-		m_replacementId = 0;
++		MtpFileInfo source = m_device.GetFileInfo(m_remoteId);
++		prepare(source, source, Replace);
++	}
++	else
++		requireMutable();
++}
++
++void MtpLocalFileCopy::relocate(const MtpFileInfo& target, const MtpFileInfo& source, MtpLocalFileCopy* replaced)
++{
++	writeback(target, source, Rename, replaced);
++}
++
++void MtpLocalFileCopy::requireMutable() const
++{
++	if (m_stage != Clean && m_stage != Dirty)
++		throw MtpFilesystemErrorWithErrorCode(EIO, "MTP writeback requires recovery: " + m_recordPath);
++}
++
++void MtpLocalFileCopy::beginRemoval()
++{
++	requireMutable();
++	if (m_stage == Clean)
++	{
++		MtpFileInfo source = m_device.GetFileInfo(m_remoteId);
++		prepare(source, source, Unlink);
++	}
++	m_operation = Unlink;
++	syncData();
++	record(RemovingSource);
++}
++
++void MtpLocalFileCopy::clearRecord()
++{
++	for (const std::string& path : { m_recordPath, m_recordPath + ".next" })
++		if (unlink(path.c_str()) && errno != ENOENT)
++			throw WriteError(errno);
++}
++
++void MtpLocalFileCopy::finishRemoval()
++{
++	record(Complete);
++	clearRecord();
++	m_stage = Unlinked;
++}
++
++void MtpLocalFileCopy::sync()
++{
++	if (unlinked())
++	{
+ 		syncData();
+-		record(Dirty);
+-	}
+-	else if (m_stage != Dirty)
+-		throw MtpFilesystemErrorWithErrorCode(EIO, "MTP writeback requires recovery: " + m_recordPath);
+-}
+-
+-void MtpLocalFileCopy::sync()
+-{
++		return;
++	}
+ 	if (m_stage == Clean)
+ 		return;
+ 	if (m_stage != Dirty)
+ 		throw MtpFilesystemErrorWithErrorCode(EIO, "MTP writeback requires recovery: " + m_recordPath);
++	writeback(m_target, m_source, m_operation, 0);
++}
++
++void MtpLocalFileCopy::writeback(const MtpFileInfo& target, const MtpFileInfo& source, Operation operation, MtpLocalFileCopy* replaced)
++{
++	if (replaced)
++		replaced->requireMutable();
+ 	syncData();
+-	NewLIBMTPFile newFile(m_uploadName, m_target.parentId, m_target.storageId, getSize());
++	NewLIBMTPFile newFile(m_uploadName, target.parentId, target.storageId, getSize());
+ 	m_device.PrepareFile(newFile, fileno(m_localFile));
+ 	LIBMTP_filetype_t uploadType = ((LIBMTP_file_t*)newFile)->filetype;
+ 	m_device.RequireFileRename(uploadType);
+-	if (m_target.id && m_target.filetype != uploadType)
+-		m_device.RequireFileRename(m_target.filetype);
+-	record(Uploading);
++	if (target.id && target.filetype != uploadType)
++		m_device.RequireFileRename(target.filetype);
++	// Namespace intent becomes persistent only after preflight, and is never a retryable dirty write.
++	prepare(target, source, operation, Uploading);
++	MtpFileInfo uploaded;
+ 	try
+ 	{
+-		m_device.SendFile(newFile, fileno(m_localFile));
++		uploaded = m_device.SendFile(newFile, fileno(m_localFile));
+ 	}
+ 	catch (...)
+ 	{
+@@ -170,16 +255,32 @@
+ 		throw;
+ 	}
+ 	m_replacementId = ((LIBMTP_file_t*)newFile)->item_id;
+-	record(BackingUp);
+-	m_device.RenameFile(m_remoteId, m_backupName);
++	if (m_target.id)
++	{
++		if (replaced)
++			replaced->beginRemoval();
++		record(BackingUp);
++		m_device.RenameFile(m_target.id, m_backupName);
++	}
+ 	record(Publishing);
+ 	m_device.RenameFile(m_replacementId, m_target.name);
+-	record(CleaningUp);
+-	m_device.DeleteObject(m_remoteId);
++	if (m_target.id)
++	{
++		record(CleaningUp);
++		m_device.DeleteObject(m_target.id);
++		if (replaced)
++			replaced->finishRemoval();
++	}
++	if (m_remoteId && m_remoteId != m_target.id)
++	{
++		record(RemovingSource);
++		m_device.DeleteObject(m_remoteId);
++	}
+ 	record(Complete);
+-	if (unlink(m_recordPath.c_str()))
+-		throw WriteError(errno);
++	clearRecord();
+ 	m_remoteId = m_replacementId;
++	m_metadata = uploaded;
++	m_metadata.name = m_target.name;
+ 	m_stage = Clean;
+ }
+ 
+@@ -227,17 +328,3 @@
+ 	if (ftruncate(fileno(m_localFile), length))
+ 		throw WriteError(errno);
+ }
+-
+-void MtpLocalFileCopy::CopyTo(MtpDevice& device, NewLIBMTPFile& destination)
+-{
+-	if (fflush(m_localFile))
+-		throw WriteError(errno);
+-	if (fseek(m_localFile, 0, SEEK_SET))
+-		throw WriteError(errno);
+-	struct stat tempInfo;
+-	if (fstat(fileno(m_localFile), &tempInfo))
+-			throw ReadError(errno);
+-
+-	device.PrepareFile(destination, fileno(m_localFile));
+-	device.SendFile(destination, fileno(m_localFile));
+-}
+--- a/src/MtpLocalFileCopy.h
++++ b/src/MtpLocalFileCopy.h
+@@ -28,14 +28,19 @@
+ {
+ public:
+ 	MtpLocalFileCopy(MtpDevice& device, uint32_t id);
++	MtpLocalFileCopy(MtpDevice& device, const MtpFileInfo& target);
+ 	~MtpLocalFileCopy();
+ 
+ 	// Synchronization leaves the local copy open for all existing handles.
+ 	void sync();
+ 	uint32_t id() const { return m_remoteId; }
+ 	uint32_t parentId() const { return m_target.parentId ? m_target.parentId : m_target.storageId; }
+-	void setId(uint32_t id) { m_remoteId = id; }
+-	bool dirty() const { return m_stage != Clean; }
++	void relocate(const MtpFileInfo& target, const MtpFileInfo& source, MtpLocalFileCopy* replaced);
++	void beginRemoval();
++	void finishRemoval();
++	bool dirty() const { return m_stage != Clean && m_stage != Unlinked; }
++	bool unlinked() const { return m_stage == Unlinked; }
++	const MtpFileInfo& metadata() const { return m_metadata; }
+ 
+ 	off_t getSize();
+ 
+@@ -44,7 +49,7 @@
+ 	void truncate(off_t length);
+ 	size_t read(void* ptr, size_t size);
+ 
+-	void CopyTo(MtpDevice& device, NewLIBMTPFile& destination);
++
+ 
+ private:
+ 	MtpLocalFileCopy(const MtpLocalFileCopy&);
+@@ -53,14 +58,23 @@
+ 	MtpDevice&			m_device;
+ 	FILE*				m_localFile;
+ 	uint32_t			m_remoteId;
+-	enum Stage { Clean, Dirty, Uploading, BackingUp, Publishing, CleaningUp, Complete };
++	enum Stage { Clean, Dirty, Uploading, BackingUp, Publishing, CleaningUp, RemovingSource, Complete, Unlinked };
++	void initialize();
++	enum Operation { Replace, Create, Rename, Unlink };
++	void prepare(const MtpFileInfo& target, const MtpFileInfo& source, Operation operation, Stage stage = Dirty);
++	void writeback(const MtpFileInfo& target, const MtpFileInfo& source, Operation operation, MtpLocalFileCopy* replaced);
++	void requireMutable() const;
++	void clearRecord();
+ 	void beginWrite();
+ 	void syncData();
+ 	void record(Stage stage);
+ 	void syncDirectory();
+ 
+ 	Stage m_stage;
++	Operation m_operation;
++	MtpFileInfo m_metadata;
+ 	MtpFileInfo m_target;
++	MtpFileInfo m_source;
+ 	uint32_t m_replacementId;
+ 	std::string m_directory;
+ 	std::string m_cachePath;
+--- a/src/MtpNode.cpp
++++ b/src/MtpNode.cpp
+@@ -107,7 +107,7 @@
+ 	throw NotImplemented("Truncate");
+ }
+ 
+-void MtpNode::Rename(MtpNode& newParent, const std::string& newName)
++void MtpNode::Rename(MtpNode& newParent, const std::string& newName, MtpNode* target)
+ {
+ 	throw NotImplemented("Rename");
+ }
+--- a/src/MtpNode.h
++++ b/src/MtpNode.h
+@@ -57,7 +57,7 @@
+ 
+ 	virtual void CreateFile(const std::string& name);
+ 
+-	virtual void Rename(MtpNode& newParent, const std::string& newName);
++	virtual void Rename(MtpNode& newParent, const std::string& newName, MtpNode* target);
+ 
+ 	virtual void Truncate(off_t length);
+ 
+--- a/src/MtpStorage.cpp
++++ b/src/MtpStorage.cpp
+@@ -39,7 +39,7 @@
+ 	throw ReadOnly();
+ }
+ 
+-void MtpStorage::Rename(MtpNode& newParent, const std::string& newName)
++void MtpStorage::Rename(MtpNode& newParent, const std::string& newName, MtpNode* target)
+ {
+ 	throw ReadOnly();
+ }
+--- a/src/MtpStorage.h
++++ b/src/MtpStorage.h
+@@ -31,7 +31,7 @@
+ 
+ 	void Remove();
+ 
+-	void Rename(MtpNode& newParent, const std::string& newName);
++	void Rename(MtpNode& newParent, const std::string& newName, MtpNode* target);
+ 
+ 	std::unique_ptr<MtpNode> Clone();
+ };
+--- a/src/jmtpfs.cpp
++++ b/src/jmtpfs.cpp
+@@ -29,6 +29,7 @@
+ #include <iostream>
+ #include <cstddef>
+ #include <cstdint>
++#include <fcntl.h>
+ #include <errno.h>
+ #include <sstream>
+ #include <iomanip>
+@@ -91,6 +92,8 @@
+ extern "C" int jmtpfs_readdir(const char* pathStr, void* buf, fuse_fill_dir_t filler,
+ 		off_t offset, struct fuse_file_info *fi)
+ {
++	if (!pathStr)
++		return -ENOENT;
+ 	FUSE_ERROR_BLOCK_START
+ 
+ 		FilesystemPath path(pathStr);
+@@ -186,6 +189,12 @@
+ {
+ 	FUSE_ERROR_BLOCK_START
+ 
++	if (info->flags & O_APPEND)
++	{
++		struct stat attrs;
++		openedFile(info)->getattr(attrs);
++		offset = attrs.st_size;
++	}
+ 	return openedFile(info)->Write(data, size, offset);
+ 
+ 	FUSE_ERROR_BLOCK_END
+@@ -258,7 +267,12 @@
+ 	std::unique_ptr<MtpNode> n = context->getNode(path);
+ 	FilesystemPath newPath(newPathStr);
+ 	std::unique_ptr<MtpNode> newParent = context->getNode(newPath.AllButTail());
+-	n->Rename(*newParent, newPath.Tail());
++	std::unique_ptr<MtpNode> target;
++	try { target = context->getNode(newPath); }
++	catch (FileNotFound&) {}
++	if (target && target->Id() == n->Id())
++		return 0;
++	n->Rename(*newParent, newPath.Tail(), target.get());
+ 
+ 	return 0;
+ 
+@@ -352,6 +366,7 @@
+ 	jmtpfs_oper.fsync = jmtpfs_fsync;
+ 	jmtpfs_oper.ftruncate = jmtpfs_ftruncate;
+ 	jmtpfs_oper.fgetattr = jmtpfs_fgetattr;
++	jmtpfs_oper.flag_nullpath_ok = 1;
+ 	jmtpfs_oper.rename = jmtpfs_rename;
+ 	jmtpfs_oper.statfs = jmtpfs_statfs;
+ 	jmtpfs_oper.chmod = jmtpfs_chmod;
+@@ -503,6 +518,9 @@
+ 	fuse_opt_add_arg(&args, "-s"); // bug in fuse4x where multithreaded sometimes doesn't exit correctly.
+ #endif
+ 
++	// Open file lifetimes belong to our shared local copies, not libfuse hidden renames.
++	if (fuse_opt_add_arg(&args, "-ohard_remove") == -1)
++		return -1;
+ 	int result = fuse_main(args.argc, args.argv, &jmtpfs_oper, context.get());
+ 
+ 	if (options.displayHelp)
