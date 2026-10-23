@@ -1,0 +1,93 @@
+--- a/src/MtpDevice.h
++++ b/src/MtpDevice.h
+@@ -22,6 +22,8 @@
+ #ifndef MTPDEVICE_H_
+ #define MTPDEVICE_H_
+ 
++#include <atomic>
++#include <thread>
+ #include "libmtp.h"
+ #include <string>
+ #include <vector>
+@@ -144,6 +146,9 @@
+ 
+ 
+ protected:
++	void ReadEvents();
++	std::atomic<bool> m_stopEvents;
++	std::thread m_eventThread;
+ 	void CheckErrors(bool throwEvenIfNoError);
+ 	LIBMTP_mtpdevice_t* m_mtpdevice;
+ 	uint32_t		m_busLocation;
+--- a/src/MtpDevice.cpp
++++ b/src/MtpDevice.cpp
+@@ -26,6 +26,7 @@
+ #include <unistd.h>
+ #include <algorithm>
+ #include <magic.h>
++#include <cstdio>
+ 
+ 
+ 
+@@ -59,7 +60,7 @@
+ 	return m_fileInfo;
+ }
+ 
+-MtpDevice::MtpDevice(LIBMTP_raw_device_t& rawDevice)
++MtpDevice::MtpDevice(LIBMTP_raw_device_t& rawDevice) : m_stopEvents(false)
+ {
+ MtpLibLock	lock;
+ 
+@@ -70,10 +71,20 @@
+ 	m_devnum = rawDevice.devnum;
+ 	LIBMTP_Clear_Errorstack(m_mtpdevice);
+ 	m_magicCookie = magic_open(MAGIC_MIME_TYPE);
+-	if (m_magicCookie == 0)
+-		throw std::runtime_error("Couldn't init magic");
+-	if (magic_load(m_magicCookie, 0))
+-		throw std::runtime_error(magic_error(m_magicCookie));
++	try
++	{
++		if (m_magicCookie == 0)
++			throw std::runtime_error("Couldn't init magic");
++		if (magic_load(m_magicCookie, 0))
++			throw std::runtime_error(magic_error(m_magicCookie));
++		m_eventThread = std::thread(&MtpDevice::ReadEvents, this);
++	}
++	catch (...)
++	{
++		if (m_magicCookie) magic_close(m_magicCookie);
++		LIBMTP_Release_Device(m_mtpdevice);
++		throw;
++	}
+ 
+ }
+ 
+@@ -81,7 +92,27 @@
+ {
+ MtpLibLock	lock;
+ 
++	// No outstanding event read may outlive libmtp's device/USB handle.
++	m_stopEvents.store(true);
++	m_eventThread.join();
++	magic_close(m_magicCookie);
+ 	LIBMTP_Release_Device(m_mtpdevice);
++}
++
++void MtpDevice::ReadEvents()
++{
++	// Some phones wait for event delivery before replying to a rename. This
++	// must run independently of MtpLibLock and never modify the metadata cache.
++	while (!m_stopEvents.load())
++	{
++		LIBMTP_event_t event;
++		uint32_t parameter = 0;
++		if (LIBMTP_Read_Event_Timeout(m_mtpdevice, &event, &parameter, 500) < 0)
++		{
++			std::fprintf(stderr, "MTP event reader stopped: USB read failed\n");
++			break;
++		}
++	}
+ }
+ 
+ std::string MtpDevice::Get_Modelname()
