@@ -1,0 +1,87 @@
+--- a/src/libmtp.h.in
++++ b/src/libmtp.h.in
+@@ -1078,6 +1078,7 @@
+  */
+ typedef void(* LIBMTP_event_cb_fn) (int, LIBMTP_event_t, uint32_t, void *);
+ int LIBMTP_Read_Event(LIBMTP_mtpdevice_t *, LIBMTP_event_t *, uint32_t *);
++int LIBMTP_Read_Event_Timeout(LIBMTP_mtpdevice_t *, LIBMTP_event_t *, uint32_t *, unsigned int);
+ int LIBMTP_Read_Event_Async(LIBMTP_mtpdevice_t *, LIBMTP_event_cb_fn, void *);
+ int LIBMTP_Handle_Events_Timeout_Completed(struct timeval *, int *);
+ 
+--- a/src/libmtp.sym
++++ b/src/libmtp.sym
+@@ -108,6 +108,7 @@
+ LIBMTP_Set_Object_Filename
+ LIBMTP_Get_Thumbnail
+ LIBMTP_Read_Event
++LIBMTP_Read_Event_Timeout
+ LIBMTP_Read_Event_Async
+ LIBMTP_Handle_Events_Timeout_Completed
+ LIBMTP_GetPartialObject
+--- a/src/libusb-glue.h
++++ b/src/libusb-glue.h
+@@ -114,6 +114,7 @@
+ void dump_usbinfo(PTP_USB *ptp_usb);
+ const char *get_playlist_extension(PTP_USB *ptp_usb);
+ void close_device(PTP_USB *ptp_usb, PTPParams *params);
++int ptp_usb_event_wait_timeout(PTPParams *, PTPContainer *, unsigned int);
+ LIBMTP_error_number_t configure_usb_device(LIBMTP_raw_device_t *device,
+ 					   PTPParams *params,
+ 					   void **usbinfo);
+--- a/src/libusb1-glue.c
++++ b/src/libusb1-glue.c
+@@ -1747,6 +1747,26 @@
+ 	return ptp_usb_event (params, event, PTP_EVENT_CHECK);
+ }
+ 
++/* A bounded interrupt read lets the owner join its event thread before freeing
++ * params or the USB handle. It does not alter the bulk timeout or error stack. */
++int ptp_usb_event_wait_timeout(PTPParams *params, PTPContainer *event,
++                               unsigned int timeout_ms) {
++  PTP_USB *usb = params->data;
++  PTPUSBEventContainer packet = {0};
++  int length = 0;
++  int result = libusb_interrupt_transfer(usb->handle, usb->intep,
++      (unsigned char *)&packet, sizeof(packet), &length, timeout_ms);
++  if (result == LIBUSB_ERROR_TIMEOUT) return 1;
++  if (result != 0 || length < 12) return -1;
++  event->Code = dtoh16(packet.code);
++  event->SessionID = params->session_id;
++  event->Transaction_ID = dtoh32(packet.trans_id);
++  event->Param1 = dtoh32(packet.param1);
++  event->Param2 = dtoh32(packet.param2);
++  event->Param3 = dtoh32(packet.param3);
++  return 0;
++}
++
+ static void
+ ptp_usb_event_cb (struct libusb_transfer *t) {
+ 	struct ptp_event_cb_data *data = t->user_data;
+--- a/src/libmtp.c
++++ b/src/libmtp.c
+@@ -2267,6 +2267,25 @@
+   return 0;
+ }
+ 
++/**
++ * Read one event with a finite, nonzero timeout in milliseconds (libusb-1.0).
++ * Returns 0 for an event, 1 for timeout, -1 for a transport error.
++ * The device owner must stop and join the reader before Release_Device.
++ */
++int LIBMTP_Read_Event_Timeout(LIBMTP_mtpdevice_t *device, LIBMTP_event_t *event,
++                             uint32_t *out1, unsigned int timeout_ms)
++{
++#ifdef HAVE_LIBUSB1
++  PTPContainer packet = {0};
++  int result = ptp_usb_event_wait_timeout(device->params, &packet, timeout_ms);
++  if (result != 0) return result;
++  LIBMTP_Handle_Event(&packet, event, out1);
++  return 0;
++#else
++  return -1;
++#endif
++}
++
+ void LIBMTP_Handle_Event(PTPContainer *ptp_event,
+                          LIBMTP_event_t *event, uint32_t *out1) {
+   uint16_t code;

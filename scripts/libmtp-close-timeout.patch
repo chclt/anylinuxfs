@@ -1,0 +1,20 @@
+--- a/src/libusb1-glue.c
++++ b/src/libusb1-glue.c
+@@ -2358,8 +2358,15 @@
+ 
+ void close_device (PTP_USB *ptp_usb, PTPParams *params)
+ {
+-  if (ptp_closesession(params)!=PTP_RC_OK)
+-    LIBMTP_ERROR("ERROR: Could not close session!\n");
++  /* CloseSession has no data phase. Some phones never answer it; leave time
++   * for USB/resource cleanup instead of spending the normal transfer timeout
++   * here. Restore that timeout before the remaining USB cleanup. */
++  int transfer_timeout = ptp_usb->timeout;
++  ptp_usb->timeout = 1000;
++  uint16_t result = ptp_closesession(params);
++  ptp_usb->timeout = transfer_timeout;
++  if (result != PTP_RC_OK)
++    LIBMTP_ERROR("CloseSession failed (0x%04x); releasing USB resources anyway.\n", result);
+   close_usb(ptp_usb);
+ }
+ 
