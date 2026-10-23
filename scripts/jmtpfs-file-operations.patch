@@ -1,5 +1,17 @@
 --- a/src/MtpDevice.cpp
 +++ b/src/MtpDevice.cpp
+@@ -187,7 +187,10 @@
+ {
+ MtpLibLock lock;
+ 
+-	if (LIBMTP_Create_Folder(m_mtpdevice, (char*) name.c_str(), parentId, storageId)==0)
++	// Our synthetic storage root uses zero; libmtp's folder creation API
++	// requires 0xFFFFFFFF for a directory directly on that storage.
++	uint32_t parent = parentId ? parentId : 0xFFFFFFFF;
++	if (LIBMTP_Create_Folder(m_mtpdevice, (char*) name.c_str(), parent, storageId)==0)
+ 		CheckErrors(true);
+ }
+ 
 @@ -248,12 +248,13 @@
  		destination->filetype = PropertyTypeFromMimeType(mimeType);
  }

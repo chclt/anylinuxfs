@@ -107,6 +107,7 @@ pub struct UsbDevice {
 impl UsbDevice {
     pub fn open(device: &Device<Context>) -> anyhow::Result<Self> {
         let handle = device.open().context("Open USB device")?;
+        crate::trace::event(format_args!("device_open bus_id={}", bus_id(device)));
         let settings = match device.active_config_descriptor() {
             Ok(config) => settings(&config),
             Err(rusb::Error::NotFound) => vec![],
@@ -126,6 +127,7 @@ impl UsbDevice {
             // Leave kernel-owned interfaces alone; never detach host drivers automatically.
             self.handle.claim_interface(interface)?;
             self.claimed.insert(interface);
+            crate::trace::event(format_args!("interface_claim interface={interface}"));
         }
         Ok(())
     }
@@ -153,6 +155,9 @@ impl UsbDevice {
                     for interface in self.claimed.clone() {
                         self.handle.release_interface(interface)?;
                         self.claimed.remove(&interface);
+                        crate::trace::event(format_args!(
+                            "interface_release interface={interface}"
+                        ));
                     }
                     if configuration == 0 {
                         self.handle.unconfigure()?;
@@ -195,6 +200,17 @@ impl UsbDevice {
             _ => {}
         }
         Ok(false)
+    }
+}
+
+impl Drop for UsbDevice {
+    fn drop(&mut self) {
+        // This marks the start of teardown; the DeviceHandle field releases its
+        // claimed interfaces and closes the device after this method returns.
+        crate::trace::event(format_args!(
+            "device_close_begin claimed_interfaces={:?}",
+            self.claimed
+        ));
     }
 }
 

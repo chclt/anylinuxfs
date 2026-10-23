@@ -47,8 +47,10 @@ pub(crate) fn mount(
 
     let device = crate::usbip::attach(bus_id, deferred).context("Attach MTP USB device")?;
     let mode = if read_only { "ro" } else { "rw" };
+    // libfuse otherwise derives the subtype from the versioned helper filename,
+    // which would no longer match the stable type checked by mount_ready.
     let options = format!(
-        "{mode},allow_other,noforget,uid={},gid={}",
+        "{mode},subtype=jmtpfs,allow_other,noforget,uid={},gid={}",
         owner.0, owner.1
     );
     let child = Command::new(DRIVER)
@@ -102,22 +104,35 @@ fn stop(child: &mut std::process::Child, mount_point: &str) {
     use sys_mount::{UnmountFlags, unmount};
     // NFS has stopped before this cleanup. Fall back to detaching if the FUSE
     // daemon disconnected, then reap it before the USB port is released.
-    if let Err(error) = unmount(mount_point, UnmountFlags::empty())
-        && error.raw_os_error() != Some(libc::EINVAL)
-    {
-        eprintln!("Unmount MTP filesystem: {error}");
-        if let Err(error) = unmount(mount_point, UnmountFlags::DETACH) {
-            eprintln!("Detach MTP filesystem: {error}");
-        }
-    }
-    match child.try_wait() {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            if let Err(error) = crate::terminate_child(child, "jmtpfs") {
-                eprintln!("{error:#}");
+    let unmounted = match unmount(mount_point, UnmountFlags::empty()) {
+        Ok(()) => true,
+        Err(error) if error.raw_os_error() == Some(libc::EINVAL) => false,
+        Err(error) => {
+            eprintln!("Unmount MTP filesystem: {error}");
+            match unmount(mount_point, UnmountFlags::DETACH) {
+                Ok(()) => true,
+                Err(error) => {
+                    eprintln!("Detach MTP filesystem: {error}");
+                    false
+                }
             }
         }
-        Err(error) => eprintln!("Check MTP helper status: {error}"),
+    };
+    // fuse_main removes its signal handlers before the jmtpfs context closes
+    // the MTP session. Once unmounted, let that cleanup finish without SIGTERM.
+    // The shared wait bounds cleanup before USB/IP is detached. If unmount did
+    // not succeed (including startup failure), explicitly stop any live helper.
+    let result = if unmounted {
+        common_utils::wait_for_child(child, "jmtpfs", None)
+    } else {
+        match child.try_wait() {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => crate::terminate_child(child, "jmtpfs"),
+            Err(error) => Err(error).context("Check MTP helper status"),
+        }
+    };
+    if let Err(error) = result {
+        eprintln!("{error:#}");
     }
 }
 
