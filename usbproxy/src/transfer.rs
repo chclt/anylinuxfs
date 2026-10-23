@@ -157,6 +157,14 @@ impl Transfer {
         if status == 0 && self.request.flags & 1 != 0 && actual < self.expected {
             status = -121;
         }
+        crate::trace::event(format_args!(
+            "complete seq={} ep={} input={} requested={} actual={actual} status={status} unlinked={}",
+            self.request.header.sequence,
+            self.request.header.endpoint,
+            self.request.header.input,
+            self.expected,
+            self.unlink.is_some()
+        ));
         if let Some(header) = self.unlink {
             protocol::write_unlink(stream, header, status)?;
         } else {
@@ -231,6 +239,7 @@ pub fn forward(
             }
         });
         let result = run(&mut device, &mut stream, rx, stopped);
+        crate::trace::event(format_args!("session_end result={result:?}"));
         // Unblock the reader on every exit, including SIGTERM and USB removal.
         _ = stream.shutdown(Shutdown::Both);
         reader_thread
@@ -301,6 +310,10 @@ fn run(
             let mut pending = pending.borrow_mut();
             match request {
                 Request::Unlink { header, target } => {
+                    crate::trace::event(format_args!(
+                        "unlink seq={} target={target}",
+                        header.sequence
+                    ));
                     if let Some(transfer) = pending.get_mut(&target) {
                         if transfer.unlink.is_some() {
                             protocol::write_unlink(stream, header, 0)?;
@@ -320,6 +333,13 @@ fn run(
                 }
                 Request::Submit(request) => {
                     let sequence = request.header.sequence;
+                    crate::trace::event(format_args!(
+                        "submit seq={sequence} ep={} input={} length={} setup={:02x?}",
+                        request.header.endpoint,
+                        request.header.input,
+                        request.buffer.len(),
+                        request.setup
+                    ));
                     if pending.contains_key(&sequence) {
                         bail!("Duplicate USB/IP transfer sequence: {sequence}");
                     }
@@ -375,8 +395,14 @@ fn run(
                                 )?,
                             }
                         }
-                        Ok(None) => protocol::write_submit(stream, &request, 0, &[], 0)?,
+                        Ok(None) => {
+                            crate::trace::event(format_args!("control_handled seq={sequence}"));
+                            protocol::write_submit(stream, &request, 0, &[], 0)?;
+                        }
                         Err(error) => {
+                            crate::trace::event(format_args!(
+                                "prepare_failed seq={sequence} error={error}"
+                            ));
                             protocol::write_submit(stream, &request, error_status(error), &[], 0)?
                         }
                     }

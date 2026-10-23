@@ -20,6 +20,7 @@ use std::time::Duration;
 
 mod device;
 mod protocol;
+mod trace;
 mod transfer;
 
 #[derive(Parser)]
@@ -87,6 +88,7 @@ fn serve_client(
                 }
             };
             let info = device::DeviceInfo::read(&device)?;
+            trace::event(format_args!("import device={id}"));
             let opened = match device::UsbDevice::open(&device) {
                 Ok(opened) => opened,
                 Err(error) => {
@@ -140,7 +142,12 @@ fn serve(
     });
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))
         .context("Restrict USB socket permissions")?;
-    if let (Some(uid), Some(gid)) = (sudo_uid, sudo_gid) {
+    // The host may already have dropped privileges before starting this helper,
+    // while leaving SUDO_UID/SUDO_GID in its environment. In that case the
+    // socket already belongs to the invoker and chown may fail on macOS.
+    if unsafe { libc::geteuid() } == 0
+        && let (Some(uid), Some(gid)) = (sudo_uid, sudo_gid)
+    {
         chown(&socket, Some(uid), Some(gid)).context("Set USB socket owner to invoking user")?;
     }
     listener
@@ -292,6 +299,7 @@ fn main() {
 mod tests {
     use super::*;
     use std::io::Read;
+
     #[test]
     fn accepted_nonblocking_socket_reads_fragmented_handshake() {
         let context = rusb::Context::new().unwrap();
