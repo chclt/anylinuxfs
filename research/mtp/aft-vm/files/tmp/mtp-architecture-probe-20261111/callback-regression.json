@@ -1,0 +1,14 @@
+[
+  {
+    "cycle": 1,
+    "phone_status": "mtp:2-1 on /Users/jike/Volumes/MTP-2-1 (rw, mounted by jike) VM[cpus: 1, ram: 512 MiB]\n  MTP writeback: 0 pending, 0 failed; cache: /Users/jike/.anylinuxfs/mtp-cache/7LEIVTTA\n"
+  },
+  {
+    "cycle": 2,
+    "phone_status": "mtp:2-1 on /Users/jike/Volumes/MTP-2-1 (rw, mounted by jike) VM[cpus: 1, ram: 512 MiB]\n  MTP writeback: 0 pending, 0 failed; cache: /Users/jike/.anylinuxfs/mtp-cache/7LEIVTTA\n"
+  },
+  {
+    "cycle": 3,
+    "phone_status": "mtp:2-1 on /Users/jike/Volumes/MTP-2-1 (rw, mounted by jike) VM[cpus: 1, ram: 512 MiB]\n  MTP writeback: 0 pending, 0 failed; cache: /Users/jike/.anylinuxfs/mtp-cache/7LEIVTTA\n"
+  }
+]

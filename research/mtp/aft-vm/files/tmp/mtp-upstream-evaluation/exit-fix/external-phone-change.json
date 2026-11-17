@@ -1,0 +1,27 @@
+{
+  "user_report": "File added on phone under Download not shown on Mac",
+  "phone_file": {
+    "path": "/sdcard/Download/www.txt",
+    "size": 0,
+    "mtime_local": "2026-11-17 18:03",
+    "observed_via": "adb shell ls -lb"
+  },
+  "host_listing": {
+    "entries": 44,
+    "www_match": false
+  },
+  "guest_direct_listing": {
+    "returncode": 0,
+    "stdout": "{\"entries\": 44, \"matching_names\": []}\n",
+    "stderr": "",
+    "seconds": 0.06850995800004966
+  },
+  "source_findings": [
+    "AFT GetChildren returns _files cache indefinitely once populated.",
+    "ReadDir caches encoded directory entries independently.",
+    "PollEvent parses/logs notifications but does not invalidate FUSE directory caches."
+  ],
+  "boundary": "Guest FUSE already misses the file; not solely Finder/macOS NFS cache. Same-session raw MTP re-enumeration has not been observed, so phone MTP indexing remains a separate possible contributor.",
+  "mount_preserved": true,
+  "user_file_modified": false
+}

@@ -1,0 +1,72 @@
+[
+  {
+    "zone": "Asia/Shanghai",
+    "input": "20261117T180307",
+    "epoch": 1794909787
+  },
+  {
+    "zone": "Asia/Shanghai",
+    "input": "20261117T100307Z",
+    "epoch": 1794909787
+  },
+  {
+    "zone": "Asia/Shanghai",
+    "input": "20261117T180307+0800",
+    "epoch": 1794909787
+  },
+  {
+    "zone": "Asia/Shanghai",
+    "input": "20261117T050307-0500",
+    "epoch": 1794909787
+  },
+  {
+    "zone": "Asia/Shanghai",
+    "input": "20261117T100307.5Z",
+    "epoch": 1794909787
+  },
+  {
+    "zone": "Asia/Shanghai",
+    "input": "20260715T120000",
+    "epoch": 1784088000
+  },
+  {
+    "zone": "Asia/Shanghai",
+    "input": "20260115T120000",
+    "epoch": 1768449600
+  },
+  {
+    "zone": "America/New_York",
+    "input": "20261117T180307",
+    "epoch": 1794956587
+  },
+  {
+    "zone": "America/New_York",
+    "input": "20261117T100307Z",
+    "epoch": 1794909787
+  },
+  {
+    "zone": "America/New_York",
+    "input": "20261117T180307+0800",
+    "epoch": 1794909787
+  },
+  {
+    "zone": "America/New_York",
+    "input": "20261117T050307-0500",
+    "epoch": 1794909787
+  },
+  {
+    "zone": "America/New_York",
+    "input": "20261117T100307.5Z",
+    "epoch": 1794909787
+  },
+  {
+    "zone": "America/New_York",
+    "input": "20260715T120000",
+    "epoch": 1784131200
+  },
+  {
+    "zone": "America/New_York",
+    "input": "20260115T120000",
+    "epoch": 1768496400
+  }
+]

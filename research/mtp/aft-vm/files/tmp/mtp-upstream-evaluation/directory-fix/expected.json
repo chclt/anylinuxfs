@@ -1,0 +1,19 @@
+{
+  "root": "/Users/jike/Developer/chclt/anylinuxfs/tmp/mtp-upstream-evaluation/mount/Internal storage/ALFS-AFT-Regression-20261117-172352",
+  "complete.bin": {
+    "size": 33554432,
+    "sha256": "7c998c4ca4113b3bb119093baf564f55fd019661b6122d28b795d326692cb589"
+  },
+  "sub/\u4e2d\u6587 \u79fb\u52a8.bin": {
+    "size": 240000,
+    "sha256": "626593ca13e6d642af76705a9ec4e8dc6b170d03ba8480b51e89144705d528ec"
+  },
+  "overwrite.bin": {
+    "size": 17,
+    "sha256": "a54c652661462ec50ba98e1f6bff016022082754bc9b71abf216d3e11d64e186"
+  },
+  "cancelled.mp4": {
+    "size": 8388608,
+    "sha256": "06837dfa87905832886deb70f5f7c28e29b569586a3dc924824f967efad4f591"
+  }
+}

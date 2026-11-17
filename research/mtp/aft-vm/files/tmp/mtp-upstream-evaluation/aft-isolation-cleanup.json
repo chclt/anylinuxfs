@@ -1,0 +1,6 @@
+{
+  "returncode": 0,
+  "stdout": "[{\"directory\": \"ALFS-Upstream-NFS4-20261116-01\", \"deleted\": [\"._large-CHEN.mp4\", \"large-CHEN.mp4\"], \"absent\": true}, {\"directory\": \"ALFS-Upstream-Timer-20261116-01\", \"deleted\": [\"._large-CHEN.mp4\", \"large-CHEN.mp4\"], \"absent\": true}]\n",
+  "stderr": "",
+  "seconds": 0.41921433300001354
+}

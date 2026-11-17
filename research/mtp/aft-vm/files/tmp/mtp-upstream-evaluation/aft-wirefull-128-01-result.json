@@ -1,0 +1,124 @@
+{
+  "start": 1794808255.1079721,
+  "bytes_accepted": 134217728,
+  "name": "sample-128MiB.bin",
+  "elapsed_seconds": 27.583865416934714,
+  "source_sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+  "write_seconds": 27.584113582968712,
+  "fsync_seconds": 0.9248853342141956,
+  "fsync_passed": true,
+  "total_seconds": 28.509248624788597,
+  "success": true,
+  "metadata_samples": [
+    {
+      "time": 1794808255.107908,
+      "seconds": 0.016220625024288893
+    },
+    {
+      "time": 1794808255.627962,
+      "seconds": 2.75297366688028
+    },
+    {
+      "time": 1794808258.8810198,
+      "seconds": 1.0938267919700593
+    },
+    {
+      "time": 1794808260.479244,
+      "seconds": 2.4603740000166
+    },
+    {
+      "time": 1794808263.4434528,
+      "seconds": 1.9053972919937223
+    },
+    {
+      "time": 1794808265.853714,
+      "seconds": 1.0159689169377089
+    },
+    {
+      "time": 1794808267.370016,
+      "seconds": 1.8519577078986913
+    },
+    {
+      "time": 1794808269.726794,
+      "seconds": 2.7637052920181304
+    },
+    {
+      "time": 1794808272.9925,
+      "seconds": 0.9111084579490125
+    },
+    {
+      "time": 1794808274.405828,
+      "seconds": 1.7435079170390964
+    },
+    {
+      "time": 1794808276.6543639,
+      "seconds": 2.770620749797672
+    },
+    {
+      "time": 1794808279.928679,
+      "seconds": 2.699698291020468
+    },
+    {
+      "time": 1794808283.133474,
+      "seconds": 0.4746554580051452
+    }
+  ],
+  "nfs_samples": [
+    {
+      "time": 1794808256.9965708,
+      "not_responding": false
+    },
+    {
+      "time": 1794808258.872331,
+      "not_responding": false
+    },
+    {
+      "time": 1794808261.02303,
+      "not_responding": false
+    },
+    {
+      "time": 1794808262.787744,
+      "not_responding": false
+    },
+    {
+      "time": 1794808264.438003,
+      "not_responding": false
+    },
+    {
+      "time": 1794808266.420855,
+      "not_responding": false
+    },
+    {
+      "time": 1794808268.338079,
+      "not_responding": false
+    },
+    {
+      "time": 1794808270.2730298,
+      "not_responding": false
+    },
+    {
+      "time": 1794808273.0641248,
+      "not_responding": false
+    },
+    {
+      "time": 1794808275.8461728,
+      "not_responding": false
+    },
+    {
+      "time": 1794808278.654546,
+      "not_responding": false
+    },
+    {
+      "time": 1794808280.5610418,
+      "not_responding": false
+    },
+    {
+      "time": 1794808282.504427,
+      "not_responding": false
+    },
+    {
+      "time": 1794808283.618835,
+      "not_responding": false
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "returncode": 0,
+  "stdout": "{\"ALFS-Upstream-Wire-128-20261116\": {\"size\": 134217728, \"sha256\": \"5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01\", \"seconds\": 21.692913509999997, \"matches\": true}, \"ALFS-Upstream-WireFull-128-20261116\": {\"size\": 134217728, \"sha256\": \"5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01\", \"seconds\": 21.472074426999995, \"matches\": true}}\n",
+  "stderr": "",
+  "seconds": 43.22493027
+}

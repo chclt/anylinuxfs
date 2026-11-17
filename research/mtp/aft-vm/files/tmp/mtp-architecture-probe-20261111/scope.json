@@ -1,0 +1,23 @@
+{
+  "branch": "codex/mtp-architecture",
+  "baseline_commit": "457d96a",
+  "host_probe": "read-only synthetic NFSv3 on loopback TCP ports 12049/12050",
+  "phone_files_used": false,
+  "guest_probe": "Interrupted after host controller SIGSEGV in disk_mount_event; not used for client recovery conclusions.",
+  "phone_restored_mount": "/Users/jike/Volumes/MTP-2-1-1",
+  "preserved_recovery_cache": "/Users/jike/.anylinuxfs/mtp-cache/VMG1Omju",
+  "pending_record_at_interruption": ".DS_Store only",
+  "protocol_reference": "https://www.rfc-editor.org/rfc/rfc1813.html#section-2.6",
+  "linux_mapping_reference": "https://github.com/torvalds/linux/blob/v6.12/fs/nfsd/vfs.c",
+  "host_crash_root_cause": "DAUnregisterCallback used NULL instead of registered stack-context pointer; a later NFS mount invoked dangling callback.",
+  "host_fix": "RAII unregister with matching callback and context; not committed",
+  "host_fix_validation": {
+    "build": "passed",
+    "existing_host_tests": 59,
+    "other_volume_mount_unmount_cycles": 3,
+    "normal_phone_unmount": "passed"
+  },
+  "final_phone_mount": "/Users/jike/Volumes/MTP-2-1",
+  "prototype_cleanup": "synthetic mount removed, standalone NFS server stopped",
+  "conclusion": "NFS retries free the server and isolate unrelated requests, but macOS reports the mount unresponsive and adds retry backoff. mutejukebox is notification policy, not latency reduction. A local metadata/namespace view and explicit sync semantics remain required."
+}

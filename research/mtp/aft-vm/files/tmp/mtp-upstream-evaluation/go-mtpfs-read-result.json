@@ -1,0 +1,19 @@
+{
+  "candidate": "go-mtpfs v1.0.1",
+  "run": "go-mtpfs-ro-02",
+  "bytes": 478481295,
+  "sha256_matches": true,
+  "total_seconds": 34.00411108392291,
+  "first_read_seconds": 28.072784499963745,
+  "directory_max_seconds": 7.601282666902989,
+  "directory_errors": [],
+  "nfs_not_responding_samples": 19,
+  "normal_host_unmount": "passed",
+  "guest_cleanup": {
+    "time": 1794803433.4113097,
+    "stage": "complete",
+    "driver_exit": 0
+  },
+  "phone_file_writes": false,
+  "limitation": "Single run with background metadata activity; no pure-throughput or write-safety conclusion"
+}

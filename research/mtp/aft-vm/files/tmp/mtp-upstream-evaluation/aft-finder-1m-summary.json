@@ -1,0 +1,171 @@
+{
+  "configuration": "Unmodified AFT v4.6 + generic kernel NFS; 4 nfsd threads; max_block_size=1048576; macOS sync,dumbtimer,rwsize=1048576; gvproxy; USB trace enabled",
+  "production_changes": false,
+  "operations": [
+    "Finder batch copy two videos + small file",
+    "Browse parent/target during copy",
+    "Quick Look playback of completed CHEN while WAN copying",
+    "Drag completed CHEN within same folder while WAN copying",
+    "Finder Replace small file with different size/content",
+    "Finder Replace WAN video with different full video (CHEN content), changing size 448011641 to 478481295",
+    "Finder duplicate small file, rename to Chinese name, delete dedicated copy",
+    "Close Finder window and normal unmount"
+  ],
+  "large_writes": [
+    {
+      "fh": "01000181000000000000000063480f0001000000",
+      "bytes": 478481295,
+      "requests": 457,
+      "start": 1794889631.831751,
+      "end": 1794889678.582111,
+      "seconds": 46.750359773635864
+    },
+    {
+      "fh": "01000181000000000000000067480f0001000000",
+      "bytes": 448011641,
+      "requests": 428,
+      "start": 1794889678.758175,
+      "end": 1794889728.678952,
+      "seconds": 49.92077708244324
+    },
+    {
+      "fh": "0100018100000000000000006d480f0001000000",
+      "bytes": 478481295,
+      "requests": 457,
+      "start": 1794889798.559459,
+      "end": 1794889846.203286,
+      "seconds": 47.643826961517334
+    }
+  ],
+  "video_batch_write_seconds": 96.84720087051392,
+  "monitor_all": {
+    "count": 660,
+    "median_seconds": 0.006092854076996446,
+    "p95_seconds": 0.09328416595235467,
+    "max_seconds": 2.356578249949962,
+    "errors": []
+  },
+  "monitor_batch": {
+    "count": 170,
+    "median_seconds": 0.014798208023421466,
+    "p95_seconds": 0.10229424992576241,
+    "max_seconds": 2.2662737909704447,
+    "errors": []
+  },
+  "monitor_large_replace": {
+    "count": 90,
+    "median_seconds": 0.012746687512844801,
+    "p95_seconds": 0.08909491612575948,
+    "max_seconds": 0.1338322078809142,
+    "errors": []
+  },
+  "nfs_not_responding_samples": 0,
+  "capture_limitations": "87 packets dropped by guest capture, creating a response-stream gap AFTER all large copies/replacement completed; do not claim complete RPC coverage for later duplicate/rename/delete. UI and fresh-session verification cover those outcomes.",
+  "background_eio": [
+    {
+      "xid": 2896774219,
+      "record_start": 435596,
+      "record_end": 435772,
+      "arrival": 1794889582.19147,
+      "ready": 1794889582.19147,
+      "client_port": 27897,
+      "proc": 17,
+      "fh": "010001810000000000000000ec420f0001000000",
+      "op": "readdirplus",
+      "reply_arrival": 1794889582.201188,
+      "reply_ready": 1794889582.201188,
+      "seconds": 0.009718179702758789,
+      "first_byte_seconds": 0.009718179702758789,
+      "status": 5,
+      "object_fh": null
+    }
+  ],
+  "fresh_verification": {
+    "CHEN_5min_MIP04_Master_H264.mp4": {
+      "size": 478481295,
+      "sha256": "54891e473609cfa199cdee4f6b989a73ad185a73bc664a123600af6a9a2a6cef",
+      "seconds": 71.689445701,
+      "matches": true
+    },
+    "WAN_5min_MIP01_Master_H264.mp4": {
+      "size": 478481295,
+      "sha256": "54891e473609cfa199cdee4f6b989a73ad185a73bc664a123600af6a9a2a6cef",
+      "seconds": 68.307745158,
+      "matches": true
+    },
+    "overwrite.bin": {
+      "size": 475136,
+      "sha256": "aa933aa5f4cacb28057c9db3998e2647d063a3f564810a21ea6c17f125d04b10",
+      "seconds": 0.07252450000001431,
+      "matches": true
+    }
+  },
+  "cleanup": {
+    "deleted": [
+      "._CHEN_5min_MIP04_Master_H264.mp4",
+      "._WAN_5min_MIP01_Master_H264.mp4",
+      "._overwrite.bin",
+      "CHEN_5min_MIP04_Master_H264.mp4",
+      "WAN_5min_MIP01_Master_H264.mp4",
+      "overwrite.bin"
+    ],
+    "directory": "ALFS-Upstream-Finder-1MiB-20261117",
+    "absent": true
+  },
+  "peak_outstanding_captured_writes": 1,
+  "captured_write_errors": 0,
+  "directory_waits_over_one_second": [
+    {
+      "time": 1794889573.420058,
+      "names": [],
+      "seconds": 2.356578249949962
+    },
+    {
+      "time": 1794889691.7147908,
+      "names": [
+        "._CHEN_5min_MIP04_Master_H264.mp4",
+        "._WAN_5min_MIP01_Master_H264.mp4",
+        "._overwrite.bin",
+        "CHEN_5min_MIP04_Master_H264.mp4",
+        "WAN_5min_MIP01_Master_H264.mp4",
+        "overwrite.bin"
+      ],
+      "seconds": 2.2662737909704447
+    },
+    {
+      "time": 1794889706.4322581,
+      "names": [
+        "._CHEN_5min_MIP04_Master_H264.mp4",
+        "._WAN_5min_MIP01_Master_H264.mp4",
+        "._overwrite.bin",
+        "CHEN_5min_MIP04_Master_H264.mp4",
+        "WAN_5min_MIP01_Master_H264.mp4",
+        "overwrite.bin"
+      ],
+      "seconds": 2.220456500072032
+    }
+  ],
+  "ui_limitations": "UI sampled during actions, not exhaustive screen recording. Drag was within same folder; no controlled long hold before release. No physical disconnect in this regression.",
+  "fresh_directory": [
+    "._CHEN_5min_MIP04_Master_H264.mp4",
+    "._WAN_5min_MIP01_Master_H264.mp4",
+    "._overwrite.bin",
+    "CHEN_5min_MIP04_Master_H264.mp4",
+    "WAN_5min_MIP01_Master_H264.mp4",
+    "overwrite.bin"
+  ],
+  "deleted_copy_absent_on_fresh_session": true,
+  "sessions": {
+    "aft-finder-1m-01": {
+      "time": 1794889951.8425379,
+      "stage": "complete",
+      "driver_exit": 0
+    },
+    "aft-finder-1m-check-01": {
+      "time": 1794890172.916412,
+      "stage": "complete",
+      "driver_exit": 0
+    }
+  },
+  "host_mounted_at_finish": false
+}

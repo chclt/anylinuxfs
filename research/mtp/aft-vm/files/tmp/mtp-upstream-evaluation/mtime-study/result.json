@@ -1,0 +1,124 @@
+{
+  "date": "2026-11-17",
+  "scope": "Display existing phone file modification times correctly; do not change phone settings. User accepts not preserving source mtime on copy.",
+  "phone_settings_changed": false,
+  "production_code_changed": false,
+  "mounted": false,
+  "display_fix": {
+    "process_timezone": "Read-only copy of Mac /etc/localtime TZif rules, passed through process TZ only",
+    "host_timezone": "Asia/Shanghai",
+    "phone_timezone_readonly_observation": "Asia/Shanghai",
+    "parser": "Unqualified MTP timestamps use configured local timezone; Z and explicit +/-HHMM offsets use UTC conversion; fractional seconds accepted at existing second precision",
+    "nfs_checks": [
+      {
+        "name": "www.txt",
+        "nfs_epoch": 1794909787.0,
+        "phone_epoch": 1794909787,
+        "mac_display_time": "2026-11-17T18:03:07+08:00"
+      },
+      {
+        "name": "CHEN_5min_MIP04_Master_H264.mp4",
+        "nfs_epoch": 1794909519.0,
+        "phone_epoch": 1794909519,
+        "mac_display_time": "2026-11-17T17:58:39+08:00"
+      }
+    ],
+    "finder_observation": "www.txt Modified: Tuesday, November 17, 2026 at 18:03",
+    "parser_cases": [
+      {
+        "zone": "Asia/Shanghai",
+        "input": "20261117T180307",
+        "epoch": 1794909787
+      },
+      {
+        "zone": "Asia/Shanghai",
+        "input": "20261117T100307Z",
+        "epoch": 1794909787
+      },
+      {
+        "zone": "Asia/Shanghai",
+        "input": "20261117T180307+0800",
+        "epoch": 1794909787
+      },
+      {
+        "zone": "Asia/Shanghai",
+        "input": "20261117T050307-0500",
+        "epoch": 1794909787
+      },
+      {
+        "zone": "Asia/Shanghai",
+        "input": "20261117T100307.5Z",
+        "epoch": 1794909787
+      },
+      {
+        "zone": "Asia/Shanghai",
+        "input": "20260715T120000",
+        "epoch": 1784088000
+      },
+      {
+        "zone": "Asia/Shanghai",
+        "input": "20260115T120000",
+        "epoch": 1768449600
+      },
+      {
+        "zone": "America/New_York",
+        "input": "20261117T180307",
+        "epoch": 1794956587
+      },
+      {
+        "zone": "America/New_York",
+        "input": "20261117T100307Z",
+        "epoch": 1794909787
+      },
+      {
+        "zone": "America/New_York",
+        "input": "20261117T180307+0800",
+        "epoch": 1794909787
+      },
+      {
+        "zone": "America/New_York",
+        "input": "20261117T050307-0500",
+        "epoch": 1794909787
+      },
+      {
+        "zone": "America/New_York",
+        "input": "20261117T100307.5Z",
+        "epoch": 1794909787
+      },
+      {
+        "zone": "America/New_York",
+        "input": "20260715T120000",
+        "epoch": 1784131200
+      },
+      {
+        "zone": "America/New_York",
+        "input": "20260115T120000",
+        "epoch": 1768496400
+      }
+    ]
+  },
+  "write_timestamp_feasibility": {
+    "property_descriptor_get_set": 0,
+    "set_date_modified_response": "0xa80a",
+    "send_object_info_historical_time": "ignored for both UTC Z and local forms; phone assigned current time",
+    "android_edit": "updated modification time to current time",
+    "test_files_deleted": true,
+    "test_directory_deleted": "alfs-time-study-1794912148",
+    "decision": "Do not pursue source-mtime preservation; no phone settings changed"
+  },
+  "remaining_display_limits": [
+    "Unqualified timestamps cannot reveal device timezone. Mac/phone timezone mismatch still needs an explicit device timezone choice; phone DateTime MTP property returned DevicePropNotSupported (0x200a).",
+    "Finder creation date showed 2001-01-01 08:00; not solved or replaced with fabricated creation time.",
+    "Only Samsung Z Fold6 tested for actual phone display; UTC/offset/DST checked with independent parser vectors."
+  ],
+  "preexisting_setattr_limit": "AFT still acknowledges ignored mtime setters; no writable-timestamp claim and no SetAttr behavior change in this display-only patch.",
+  "shutdown": {
+    "time": 1794912420.9249346,
+    "stage": "complete",
+    "driver_exit": 0
+  },
+  "driver_sha256": "6a45a1a3758867245638ec20159fc5dfb56945a6f459f842c40e14b31abda251",
+  "reference": "https://android.googlesource.com/platform/frameworks/base/+/master/media/java/android/mtp/MtpDatabase.java",
+  "accepted_timezone_policy": "User explicitly accepts Mac timezone for unqualified device timestamps. Keep explicit UTC/offset parsing; do not add phone timezone configuration or change phone settings.",
+  "creation_date_followup": "../birthtime-study/result.json"
+}

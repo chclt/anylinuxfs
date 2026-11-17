@@ -1,0 +1,6 @@
+{
+  "returncode": 0,
+  "stdout": "[{\"directory\": \"ALFS-Upstream-Wire-128-20261116\", \"removed\": [\"._sample-128MiB.bin\", \"sample-128MiB.bin\"], \"absent\": true}, {\"directory\": \"ALFS-Upstream-WireFull-128-20261116\", \"removed\": [\"._sample-128MiB.bin\", \"sample-128MiB.bin\"], \"absent\": true}]\n",
+  "stderr": "",
+  "seconds": 0.3253490840000097
+}

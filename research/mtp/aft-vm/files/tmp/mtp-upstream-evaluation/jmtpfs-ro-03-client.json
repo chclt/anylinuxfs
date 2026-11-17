@@ -1,0 +1,107 @@
+{
+  "root": [
+    {
+      "name": "Internal storage",
+      "stat": [
+        16877,
+        2,
+        436207773,
+        19,
+        0,
+        0,
+        0,
+        0,
+        2201990688,
+        0
+      ]
+    }
+  ],
+  "children": [
+    {
+      "name": "Pictures",
+      "bytes": 0,
+      "dir": true
+    },
+    {
+      "name": "ALFS-Finder-Test-20261112-140129",
+      "bytes": 0,
+      "dir": true
+    },
+    {
+      "name": ".recycle",
+      "bytes": 0,
+      "dir": true
+    },
+    {
+      "name": "log",
+      "bytes": 0,
+      "dir": true
+    },
+    {
+      "name": "Audiobooks",
+      "bytes": 0,
+      "dir": true
+    },
+    {
+      "name": "Alarms",
+      "bytes": 0,
+      "dir": true
+    },
+    {
+      "name": "Recordings",
+      "bytes": 0,
+      "dir": true
+    },
+    {
+      "name": "Android",
+      "bytes": 0,
+      "dir": true
+    },
+    {
+      "name": "Music",
+      "bytes": 0,
+      "dir": true
+    },
+    {
+      "name": "Documents",
+      "bytes": 0,
+      "dir": true
+    },
+    {
+      "name": "Podcasts",
+      "bytes": 0,
+      "dir": true
+    },
+    {
+      "name": "Movies",
+      "bytes": 0,
+      "dir": true
+    },
+    {
+      "name": ".mixplorer",
+      "bytes": 0,
+      "dir": true
+    },
+    {
+      "name": "DCIM",
+      "bytes": 0,
+      "dir": true
+    },
+    {
+      "name": "Notifications",
+      "bytes": 0,
+      "dir": true
+    },
+    {
+      "name": "Download",
+      "bytes": 0,
+      "dir": true
+    },
+    {
+      "name": "Ringtones",
+      "bytes": 0,
+      "dir": true
+    }
+  ],
+  "seconds": 0.34532637521624565
+}

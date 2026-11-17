@@ -1,0 +1,30 @@
+[
+  {
+    "repo": "JasonFerrara/jmtpfs",
+    "tag": "v0.5",
+    "sha": "928fb8f2eec34232e3b2cecc121195caa8865e15",
+    "archive_sha256": "70ab6c8ebc737ef77af316cd068ba7bed9cecbf39faa7668e9f4d102a882e9a3",
+    "source": "tmp/mtp-upstream-evaluation/sources/jmtpfs-928fb8f2eec34232e3b2cecc121195caa8865e15"
+  },
+  {
+    "repo": "hanwen/go-mtpfs",
+    "tag": "v1.0.1",
+    "sha": "a759730c796e574fcdc8840deabb57ec0826de71",
+    "archive_sha256": "e4da8c8a088d7a6fa27da1504577e1bed99d9720ba90b79068ec07ac9218e190",
+    "source": "tmp/mtp-upstream-evaluation/sources/go-mtpfs-a759730c796e574fcdc8840deabb57ec0826de71"
+  },
+  {
+    "repo": "phatina/simple-mtpfs",
+    "tag": "v0.4.0",
+    "sha": "19e7bb9b608b0c0dce2ee6f56fac75901bc69529",
+    "archive_sha256": "b70e370f7c9b2ac5aa672a4ba7f9366833364c731d2a34bfed24bb52fa4eb6cb",
+    "source": "tmp/mtp-upstream-evaluation/sources/simple-mtpfs-19e7bb9b608b0c0dce2ee6f56fac75901bc69529"
+  },
+  {
+    "repo": "whoozle/android-file-transfer-linux",
+    "tag": "v4.6",
+    "sha": "712dce6ea71793f6f8454e8ce75a0fd4ea553226",
+    "archive_sha256": "03ba4b3bc1e31e5656fdf63b213ca259323c0fbb4b187843ce19209338ae63fa",
+    "source": "tmp/mtp-upstream-evaluation/sources/android-file-transfer-linux-712dce6ea71793f6f8454e8ce75a0fd4ea553226"
+  }
+]

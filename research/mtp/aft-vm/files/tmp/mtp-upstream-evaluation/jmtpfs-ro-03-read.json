@@ -1,0 +1,130 @@
+{
+  "open_seconds": 0.017761874943971634,
+  "error": "[Errno 5] Input/output error",
+  "metadata_samples": [
+    {
+      "seconds": 0.020420707995072007
+    },
+    {
+      "seconds": 4.083474125014618
+    },
+    {
+      "seconds": 0.00010808301158249378
+    },
+    {
+      "seconds": 0.000138165894895792
+    },
+    {
+      "seconds": 0.00010866601951420307
+    },
+    {
+      "seconds": 0.0001691670622676611
+    },
+    {
+      "seconds": 0.00010725017637014389
+    },
+    {
+      "seconds": 0.00012199999764561653
+    },
+    {
+      "seconds": 9.704101830720901e-05
+    },
+    {
+      "seconds": 0.00010629184544086456
+    },
+    {
+      "seconds": 0.00013041705824434757
+    },
+    {
+      "seconds": 0.00010287505574524403
+    },
+    {
+      "seconds": 0.00010337494313716888
+    },
+    {
+      "seconds": 0.00010020798072218895
+    },
+    {
+      "seconds": 0.00010558310896158218
+    },
+    {
+      "seconds": 0.00032220780849456787
+    },
+    {
+      "seconds": 0.00011274986900389194
+    },
+    {
+      "seconds": 0.00011679111048579216
+    },
+    {
+      "seconds": 0.0001220828853547573
+    },
+    {
+      "seconds": 0.0001066671684384346
+    },
+    {
+      "seconds": 0.0001379160676151514
+    },
+    {
+      "seconds": 8.300016634166241e-05
+    },
+    {
+      "seconds": 0.0001220828853547573
+    },
+    {
+      "seconds": 9.908294305205345e-05
+    },
+    {
+      "seconds": 0.00010195886716246605
+    },
+    {
+      "seconds": 0.00010954192839562893
+    },
+    {
+      "seconds": 9.108288213610649e-05
+    },
+    {
+      "seconds": 0.00010679196566343307
+    },
+    {
+      "seconds": 7.163394458126277,
+      "error": "[Errno 60] Operation timed out: 'tmp/mtp-upstream-evaluation/mount/Internal storage/ALFS-Finder-Test-20261112-140129'"
+    },
+    {
+      "seconds": 3.5937733331229538,
+      "error": "[Errno 60] Operation timed out: 'tmp/mtp-upstream-evaluation/mount/Internal storage/ALFS-Finder-Test-20261112-140129'"
+    },
+    {
+      "seconds": 3.5687760829459876,
+      "error": "[Errno 60] Operation timed out: 'tmp/mtp-upstream-evaluation/mount/Internal storage/ALFS-Finder-Test-20261112-140129'"
+    },
+    {
+      "seconds": 3.5741082499735057,
+      "error": "[Errno 60] Operation timed out: 'tmp/mtp-upstream-evaluation/mount/Internal storage/ALFS-Finder-Test-20261112-140129'"
+    },
+    {
+      "seconds": 3.5926146670244634,
+      "error": "[Errno 60] Operation timed out: 'tmp/mtp-upstream-evaluation/mount/Internal storage/ALFS-Finder-Test-20261112-140129'"
+    },
+    {
+      "seconds": 7.190594875020906,
+      "error": "[Errno 60] Operation timed out: 'tmp/mtp-upstream-evaluation/mount/Internal storage/ALFS-Finder-Test-20261112-140129'"
+    },
+    {
+      "seconds": 3.5941935000009835,
+      "error": "[Errno 60] Operation timed out: 'tmp/mtp-upstream-evaluation/mount/Internal storage/ALFS-Finder-Test-20261112-140129'"
+    },
+    {
+      "seconds": 3.577411707956344,
+      "error": "[Errno 60] Operation timed out: 'tmp/mtp-upstream-evaluation/mount/Internal storage/ALFS-Finder-Test-20261112-140129'"
+    },
+    {
+      "seconds": 3.5949343747925013,
+      "error": "[Errno 60] Operation timed out: 'tmp/mtp-upstream-evaluation/mount/Internal storage/ALFS-Finder-Test-20261112-140129'"
+    },
+    {
+      "seconds": 1.9429808750282973,
+      "error": "[Errno 6] Device not configured: 'tmp/mtp-upstream-evaluation/mount/Internal storage/ALFS-Finder-Test-20261112-140129'"
+    }
+  ]
+}

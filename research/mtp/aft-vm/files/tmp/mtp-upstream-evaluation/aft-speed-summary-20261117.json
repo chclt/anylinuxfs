@@ -1,0 +1,673 @@
+{
+  "date": "2026-11-17",
+  "device": "Samsung Z Fold 6 04e8:6860",
+  "driver": "Unmodified AFT v4.6 712dce6ea71793f6f8454e8ce75a0fd4ea553226",
+  "production_modified": false,
+  "transport": "gvproxy + USB forwarding, USB trace enabled during all write comparisons",
+  "nfs_threads": 4,
+  "vm_memory_mib": 512,
+  "nfs_server_default_max_block_size": 65536,
+  "nfs_server_experimental_max_block_size": 1048576,
+  "options": "rw,sync,tcp,vers=3,locallocks,soft,intr,timeo=100,retrans=3,dumbtimer; rwsize varied",
+  "results": [
+    {
+      "start": 1794888588.8518631,
+      "bytes_accepted": 134217728,
+      "name": "sample-128MiB.bin",
+      "elapsed_seconds": 49.237368165981025,
+      "source_sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+      "write_seconds": 49.237884749891236,
+      "fsync_seconds": 7.791910320520401e-06,
+      "fsync_passed": true,
+      "total_seconds": 49.238331832922995,
+      "success": true,
+      "run": "aft-speed-nfs-32768",
+      "actual_nfs_bytes": 32768,
+      "mib_per_second": 2.5996006614182927,
+      "dir_median_seconds": 0.0074379160068929195,
+      "dir_max_seconds": 2.2978233750909567,
+      "dir_errors": 0,
+      "nfs_not_responding_samples": 0
+    },
+    {
+      "start": 1794888638.322773,
+      "bytes_accepted": 134217728,
+      "name": "sample-128MiB.bin",
+      "elapsed_seconds": 23.360991291934624,
+      "source_sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+      "write_seconds": 23.361458708997816,
+      "fsync_seconds": 8.082948625087738e-06,
+      "fsync_passed": true,
+      "total_seconds": 23.362201916985214,
+      "success": true,
+      "run": "aft-speed-nfs-1048576",
+      "actual_nfs_bytes": 65536,
+      "mib_per_second": 5.478935609529986,
+      "dir_median_seconds": 0.004196645459160209,
+      "dir_max_seconds": 0.051527250092476606,
+      "dir_errors": 0,
+      "nfs_not_responding_samples": 0
+    },
+    {
+      "start": 1794888918.1262379,
+      "bytes_accepted": 134217728,
+      "name": "sample-128MiB.bin",
+      "elapsed_seconds": 17.494260540930554,
+      "source_sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+      "write_seconds": 17.494459541048855,
+      "fsync_seconds": 6.417045369744301e-06,
+      "fsync_passed": true,
+      "total_seconds": 17.494731665821746,
+      "success": true,
+      "run": "aft-speed-large-131072",
+      "actual_nfs_bytes": 131072,
+      "mib_per_second": 7.316488326029304,
+      "dir_median_seconds": 0.008728000102564692,
+      "dir_max_seconds": 0.026736499974504113,
+      "dir_errors": 0,
+      "nfs_not_responding_samples": 0
+    },
+    {
+      "start": 1794888966.4251258,
+      "bytes_accepted": 134217728,
+      "name": "sample-128MiB.bin",
+      "elapsed_seconds": 15.22400858392939,
+      "source_sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+      "write_seconds": 15.224319458939135,
+      "fsync_seconds": 6.832880899310112e-06,
+      "fsync_passed": true,
+      "total_seconds": 15.224882291862741,
+      "success": true,
+      "run": "aft-speed-large-262144",
+      "actual_nfs_bytes": 262144,
+      "mib_per_second": 8.40728995773007,
+      "dir_median_seconds": 0.015188770950771868,
+      "dir_max_seconds": 0.05183387501165271,
+      "dir_errors": 0,
+      "nfs_not_responding_samples": 0
+    },
+    {
+      "start": 1794888981.980125,
+      "bytes_accepted": 134217728,
+      "name": "sample-128MiB.bin",
+      "elapsed_seconds": 13.563610167009756,
+      "source_sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+      "write_seconds": 13.563853667117655,
+      "fsync_seconds": 1.1290889233350754e-05,
+      "fsync_passed": true,
+      "total_seconds": 13.564166707918048,
+      "success": true,
+      "run": "aft-speed-large-1048576",
+      "actual_nfs_bytes": 1048576,
+      "mib_per_second": 9.436628342622797,
+      "dir_median_seconds": 0.05514039588160813,
+      "dir_max_seconds": 0.2135832910425961,
+      "dir_errors": 0,
+      "nfs_not_responding_samples": 0
+    },
+    {
+      "start": 1794888995.982882,
+      "bytes_accepted": 134217728,
+      "name": "sample-128MiB.bin",
+      "elapsed_seconds": 24.488980083027855,
+      "source_sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+      "write_seconds": 24.489406833192334,
+      "fsync_seconds": 5.665933713316917e-06,
+      "fsync_passed": true,
+      "total_seconds": 24.48976512509398,
+      "success": true,
+      "run": "aft-speed-large-65536",
+      "actual_nfs_bytes": 65536,
+      "mib_per_second": 5.2266732386437615,
+      "dir_median_seconds": 0.005633166059851646,
+      "dir_max_seconds": 0.040518041932955384,
+      "dir_errors": 0,
+      "nfs_not_responding_samples": 0
+    },
+    {
+      "start": 1794889033.1241689,
+      "bytes_accepted": 478481295,
+      "name": "CHEN.mp4",
+      "elapsed_seconds": 48.11355245811865,
+      "source_sha256": "54891e473609cfa199cdee4f6b989a73ad185a73bc664a123600af6a9a2a6cef",
+      "write_seconds": 48.11379283317365,
+      "fsync_seconds": 4.459172487258911e-06,
+      "fsync_passed": true,
+      "total_seconds": 48.11413454101421,
+      "success": true,
+      "run": "aft-speed-full-1048576",
+      "actual_nfs_bytes": 1048576,
+      "mib_per_second": 9.484018080660325,
+      "dir_median_seconds": 0.05041450052522123,
+      "dir_max_seconds": 0.18461620807647705,
+      "dir_errors": 0,
+      "nfs_not_responding_samples": 0
+    }
+  ],
+  "wire": [
+    {
+      "capture": "aft-speed-01-analysis",
+      "client_port": 59508,
+      "write_sizes": {
+        "4096": 2,
+        "163": 2,
+        "11": 2,
+        "32768": 4096
+      },
+      "peak_outstanding_writes_at_guest": 1,
+      "write_statuses": {
+        "0": 4102
+      }
+    },
+    {
+      "capture": "aft-speed-01-analysis",
+      "client_port": 62280,
+      "write_sizes": {
+        "4096": 2,
+        "163": 2,
+        "11": 2,
+        "65536": 2048
+      },
+      "peak_outstanding_writes_at_guest": 1,
+      "write_statuses": {
+        "0": 2054
+      }
+    },
+    {
+      "capture": "aft-speed-large-analysis",
+      "client_port": 42700,
+      "write_sizes": {
+        "4096": 2,
+        "163": 2,
+        "11": 2,
+        "131072": 1024
+      },
+      "peak_outstanding_writes_at_guest": 1,
+      "write_statuses": {
+        "0": 1030
+      }
+    },
+    {
+      "capture": "aft-speed-large-analysis",
+      "client_port": 44237,
+      "write_sizes": {
+        "4096": 2,
+        "163": 2,
+        "11": 2,
+        "262144": 512
+      },
+      "peak_outstanding_writes_at_guest": 1,
+      "write_statuses": {
+        "0": 518
+      }
+    },
+    {
+      "capture": "aft-speed-large-analysis",
+      "client_port": 58168,
+      "write_sizes": {
+        "4096": 2,
+        "163": 2,
+        "11": 2,
+        "1048576": 128
+      },
+      "peak_outstanding_writes_at_guest": 1,
+      "write_statuses": {
+        "0": 134
+      }
+    },
+    {
+      "capture": "aft-speed-large-analysis",
+      "client_port": 56050,
+      "write_sizes": {
+        "4096": 2,
+        "163": 2,
+        "11": 2,
+        "65536": 2048
+      },
+      "peak_outstanding_writes_at_guest": 1,
+      "write_statuses": {
+        "0": 2054
+      }
+    },
+    {
+      "capture": "aft-speed-large-analysis",
+      "client_port": 64658,
+      "write_sizes": {
+        "4096": 2,
+        "163": 2,
+        "11": 2,
+        "1048576": 456,
+        "330639": 1
+      },
+      "peak_outstanding_writes_at_guest": 1,
+      "write_statuses": {
+        "0": 463
+      }
+    }
+  ],
+  "direct_guest": [
+    {
+      "name": "guest-32768.bin",
+      "application_block": 32768,
+      "bytes": 134217728,
+      "seconds": 26.05815168,
+      "MiB_s": 4.912090526291694,
+      "metadata_samples": [
+        {
+          "time": 1794888518.1690514,
+          "seconds": 0.006759292000001693
+        },
+        {
+          "time": 1794888518.675999,
+          "seconds": 0.0020747500000020125
+        },
+        {
+          "time": 1794888519.1782863,
+          "seconds": 0.01064916600000032
+        },
+        {
+          "time": 1794888519.689036,
+          "seconds": 0.00897358399999959
+        },
+        {
+          "time": 1794888520.198115,
+          "seconds": 0.0052448749999989275
+        },
+        {
+          "time": 1794888520.7034404,
+          "seconds": 0.0060482499999992
+        },
+        {
+          "time": 1794888521.2096858,
+          "seconds": 0.008885041999999288
+        },
+        {
+          "time": 1794888521.718768,
+          "seconds": 0.009446791999998538
+        },
+        {
+          "time": 1794888522.2288618,
+          "seconds": 0.010366708000002944
+        },
+        {
+          "time": 1794888522.7393854,
+          "seconds": 0.002845832999998521
+        },
+        {
+          "time": 1794888523.2423825,
+          "seconds": 0.010862750000001142
+        },
+        {
+          "time": 1794888523.7534938,
+          "seconds": 0.01850712499999929
+        },
+        {
+          "time": 1794888524.272097,
+          "seconds": 0.00954045800000003
+        },
+        {
+          "time": 1794888524.7817316,
+          "seconds": 0.008642749999999921
+        },
+        {
+          "time": 1794888525.2904758,
+          "seconds": 0.006012041000001744
+        },
+        {
+          "time": 1794888525.79659,
+          "seconds": 0.005435874999999868
+        },
+        {
+          "time": 1794888526.3026597,
+          "seconds": 0.007736334000000511
+        },
+        {
+          "time": 1794888526.8107357,
+          "seconds": 0.0076864580000020055
+        },
+        {
+          "time": 1794888527.3185508,
+          "seconds": 0.006949915999999945
+        },
+        {
+          "time": 1794888527.8256488,
+          "seconds": 0.012449833000001576
+        },
+        {
+          "time": 1794888528.3382256,
+          "seconds": 0.010313666000001831
+        },
+        {
+          "time": 1794888528.8485987,
+          "seconds": 0.009676917000000174
+        },
+        {
+          "time": 1794888529.358586,
+          "seconds": 0.011660959000000304
+        },
+        {
+          "time": 1794888529.8706453,
+          "seconds": 0.010418333000000501
+        },
+        {
+          "time": 1794888530.381214,
+          "seconds": 0.006572042000001943
+        },
+        {
+          "time": 1794888530.8879135,
+          "seconds": 0.00963137500000144
+        },
+        {
+          "time": 1794888531.3977077,
+          "seconds": 0.010987458999998978
+        },
+        {
+          "time": 1794888531.9088295,
+          "seconds": 0.010824458000001869
+        },
+        {
+          "time": 1794888532.419804,
+          "seconds": 0.010350875000000315
+        },
+        {
+          "time": 1794888532.9302883,
+          "seconds": 0.010820625000000916
+        },
+        {
+          "time": 1794888533.441229,
+          "seconds": 0.008762541999999485
+        },
+        {
+          "time": 1794888533.9501185,
+          "seconds": 0.014432665999997596
+        },
+        {
+          "time": 1794888534.4649065,
+          "seconds": 0.007203332999999645
+        },
+        {
+          "time": 1794888534.9723132,
+          "seconds": 0.009799957999995002
+        },
+        {
+          "time": 1794888535.4822762,
+          "seconds": 0.011733417000002078
+        },
+        {
+          "time": 1794888535.9942267,
+          "seconds": 0.01155375000000447
+        },
+        {
+          "time": 1794888536.5060124,
+          "seconds": 0.010200791999999126
+        },
+        {
+          "time": 1794888537.0163817,
+          "seconds": 0.013221541999996589
+        },
+        {
+          "time": 1794888537.540152,
+          "seconds": 0.025469416999996497
+        },
+        {
+          "time": 1794888538.0657659,
+          "seconds": 0.00880141600000428
+        },
+        {
+          "time": 1794888538.5746806,
+          "seconds": 0.008924375000006535
+        },
+        {
+          "time": 1794888539.083719,
+          "seconds": 0.006161708000000488
+        },
+        {
+          "time": 1794888539.5901427,
+          "seconds": 0.028830457999994508
+        },
+        {
+          "time": 1794888540.1190774,
+          "seconds": 0.0012850410000027068
+        },
+        {
+          "time": 1794888540.6208346,
+          "seconds": 0.009094125000004283
+        },
+        {
+          "time": 1794888541.1300387,
+          "seconds": 0.01682937500000037
+        },
+        {
+          "time": 1794888541.6469724,
+          "seconds": 0.009098791999996081
+        },
+        {
+          "time": 1794888542.1562934,
+          "seconds": 0.009235791999998355
+        },
+        {
+          "time": 1794888542.6657462,
+          "seconds": 0.014607333000000722
+        },
+        {
+          "time": 1794888543.1804795,
+          "seconds": 0.007727082999998913
+        },
+        {
+          "time": 1794888543.6883411,
+          "seconds": 0.012393707999997616
+        },
+        {
+          "time": 1794888544.2010677,
+          "seconds": 0.012617208999998297
+        }
+      ]
+    },
+    {
+      "name": "guest-1048576.bin",
+      "application_block": 1048576,
+      "bytes": 134217728,
+      "seconds": 12.279323173000002,
+      "MiB_s": 10.424027301557526,
+      "metadata_samples": [
+        {
+          "time": 1794888544.231241,
+          "seconds": 0.013743249999997431
+        },
+        {
+          "time": 1794888544.7450871,
+          "seconds": 0.11676991700000627
+        },
+        {
+          "time": 1794888545.3619568,
+          "seconds": 0.03228879199999568
+        },
+        {
+          "time": 1794888545.8943684,
+          "seconds": 0.08042470800000245
+        },
+        {
+          "time": 1794888546.4752452,
+          "seconds": 0.0011319580000019869
+        },
+        {
+          "time": 1794888546.976517,
+          "seconds": 0.04167125000000027
+        },
+        {
+          "time": 1794888547.518299,
+          "seconds": 0.04856050000000067
+        },
+        {
+          "time": 1794888548.066999,
+          "seconds": 0.05980000000000274
+        },
+        {
+          "time": 1794888548.6268904,
+          "seconds": 0.045287416000000746
+        },
+        {
+          "time": 1794888549.17228,
+          "seconds": 0.04486720799999944
+        },
+        {
+          "time": 1794888549.717255,
+          "seconds": 0.09008700100000055
+        },
+        {
+          "time": 1794888550.3074815,
+          "seconds": 0.06539508299999852
+        },
+        {
+          "time": 1794888550.8730237,
+          "seconds": 0.06835566699999873
+        },
+        {
+          "time": 1794888551.4415348,
+          "seconds": 0.08279283299999918
+        },
+        {
+          "time": 1794888552.024457,
+          "seconds": 0.012581458999996187
+        },
+        {
+          "time": 1794888552.5371356,
+          "seconds": 0.017354666000002794
+        },
+        {
+          "time": 1794888553.0545948,
+          "seconds": 0.06888950000000449
+        },
+        {
+          "time": 1794888553.6235988,
+          "seconds": 0.06703787499999692
+        },
+        {
+          "time": 1794888554.1907632,
+          "seconds": 0.04303900000000027
+        },
+        {
+          "time": 1794888554.7339272,
+          "seconds": 0.03108829199999974
+        },
+        {
+          "time": 1794888555.2651584,
+          "seconds": 0.03432745799999992
+        },
+        {
+          "time": 1794888555.799622,
+          "seconds": 0.03737358299999727
+        },
+        {
+          "time": 1794888556.3371406,
+          "seconds": 0.082029833
+        }
+      ]
+    }
+  ],
+  "notes": [
+    "Requested 1 MiB with default server negotiated only 64 KiB.",
+    "Server max_block_size changed with no client mounted, by stopping rpc.nfsd workers, setting standard procfs parameter, then restarting four workers.",
+    "One 128 KiB round required diskutil normal unmount after umount reported busy; no force unmount.",
+    "One background readdirplus EIO in initial capture; original driver reported InvalidObjectHandle. Test-directory monitor had no errors. Enlarged-block capture had no EIO.",
+    "All nine files (1,552,223,119 bytes) verified by SHA-256 from a fresh VM / MTP session, then exact known test files and dedicated root removed."
+  ],
+  "source": "https://github.com/torvalds/linux/blob/v6.12/fs/nfsd/nfssvc.c#L562-L580",
+  "verification": [
+    {
+      "path": "guest-32768.bin",
+      "size": 134217728,
+      "sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+      "seconds": 18.365559924999996
+    },
+    {
+      "path": "guest-1048576.bin",
+      "size": 134217728,
+      "sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+      "seconds": 17.659403091999998
+    },
+    {
+      "path": "nfs-32768/sample-128MiB.bin",
+      "size": 134217728,
+      "sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+      "seconds": 19.891671758999998
+    },
+    {
+      "path": "nfs-1048576/sample-128MiB.bin",
+      "size": 134217728,
+      "sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+      "seconds": 21.047757968
+    },
+    {
+      "path": "large-131072/sample-128MiB.bin",
+      "size": 134217728,
+      "sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+      "seconds": 17.484798049999995
+    },
+    {
+      "path": "large-262144/sample-128MiB.bin",
+      "size": 134217728,
+      "sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+      "seconds": 17.118710382999993
+    },
+    {
+      "path": "large-1048576/sample-128MiB.bin",
+      "size": 134217728,
+      "sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+      "seconds": 17.052710716000007
+    },
+    {
+      "path": "large-65536/sample-128MiB.bin",
+      "size": 134217728,
+      "sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+      "seconds": 17.141972675000005
+    },
+    {
+      "path": "full-1048576/CHEN.mp4",
+      "size": 478481295,
+      "sha256": "54891e473609cfa199cdee4f6b989a73ad185a73bc664a123600af6a9a2a6cef",
+      "seconds": 65.755998157
+    }
+  ],
+  "cleanup": {
+    "removed_root": "/mnt/upstream/Internal storage/ALFS-Upstream-Speed-20261117",
+    "removed_entries": [
+      "._full-1048576",
+      "._large-1048576",
+      "._large-131072",
+      "._large-262144",
+      "._large-65536",
+      "._nfs-1048576",
+      "._nfs-32768",
+      "full-1048576",
+      "guest-1048576.bin",
+      "guest-32768.bin",
+      "large-1048576",
+      "large-131072",
+      "large-262144",
+      "large-65536",
+      "nfs-1048576",
+      "nfs-32768",
+      "full-1048576/._CHEN.mp4",
+      "full-1048576/CHEN.mp4",
+      "large-1048576/._sample-128MiB.bin",
+      "large-1048576/sample-128MiB.bin",
+      "large-131072/._sample-128MiB.bin",
+      "large-131072/sample-128MiB.bin",
+      "large-262144/._sample-128MiB.bin",
+      "large-262144/sample-128MiB.bin",
+      "large-65536/._sample-128MiB.bin",
+      "large-65536/sample-128MiB.bin",
+      "nfs-1048576/._sample-128MiB.bin",
+      "nfs-1048576/sample-128MiB.bin",
+      "nfs-32768/._sample-128MiB.bin",
+      "nfs-32768/sample-128MiB.bin"
+    ],
+    "root_absent": true
+  },
+  "final_vm_state": {
+    "time": 1794889402.4536684,
+    "stage": "complete",
+    "driver_exit": 0
+  }
+}

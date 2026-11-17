@@ -1,0 +1,19 @@
+{
+  "started": 1794911603.517772,
+  "rounds": [
+    {
+      "round": 0,
+      "seconds": 0.2114451250527054,
+      "entries": 480,
+      "size": 33554432
+    },
+    {
+      "round": 1,
+      "seconds": 0.026548249879851937,
+      "entries": 480,
+      "size": 33554432
+    }
+  ],
+  "guest_sha256": "00495905420ae650521c75cee0c7bfe7ae8e235fc26ec14e4ce660659845823e",
+  "status": "passed"
+}

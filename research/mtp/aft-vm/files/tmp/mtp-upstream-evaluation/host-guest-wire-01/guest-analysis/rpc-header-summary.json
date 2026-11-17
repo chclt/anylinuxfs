@@ -1,0 +1,146 @@
+{
+  "method": "Captured record headers only; TCP payload gaps are not reassembled; unmatched calls are not classified as losses",
+  "capture_linktype": 1,
+  "port": 2049,
+  "captured_packets": 35795,
+  "calls": 1314,
+  "paired": 1313,
+  "op_counts": {
+    "access": 711,
+    "readdirplus": 276,
+    "getattr": 17,
+    "read": 1,
+    "18": 4,
+    "lookup": 2,
+    "8": 2,
+    "2": 2,
+    "write": 294,
+    "commit": 4
+  },
+  "status_counts": {
+    "0": 1310,
+    "5": 1,
+    "2": 2
+  },
+  "longest_queries": [
+    {
+      "xid": 2896646722,
+      "op": "readdirplus",
+      "start": 1794806806.352372,
+      "end": 1794806806.867195,
+      "seconds": 0.5148229598999023,
+      "status": 0,
+      "client_port": 34269
+    },
+    {
+      "xid": 2896647116,
+      "op": "readdirplus",
+      "start": 1794806809.252972,
+      "end": 1794806809.664441,
+      "seconds": 0.4114692211151123,
+      "status": 0,
+      "client_port": 34269
+    },
+    {
+      "xid": 2896646476,
+      "op": "readdirplus",
+      "start": 1794806804.137972,
+      "end": 1794806804.325302,
+      "seconds": 0.18732976913452148,
+      "status": 0,
+      "client_port": 34269
+    },
+    {
+      "xid": 2896646697,
+      "op": "readdirplus",
+      "start": 1794806806.202321,
+      "end": 1794806806.320375,
+      "seconds": 0.11805391311645508,
+      "status": 0,
+      "client_port": 34269
+    },
+    {
+      "xid": 2896651135,
+      "op": "getattr",
+      "start": 1794807846.093097,
+      "end": 1794807846.183232,
+      "seconds": 0.09013509750366211,
+      "status": 0,
+      "client_port": 48659
+    },
+    {
+      "xid": 2896651392,
+      "op": "getattr",
+      "start": 1794807848.077501,
+      "end": 1794807848.167508,
+      "seconds": 0.09000682830810547,
+      "status": 0,
+      "client_port": 48659
+    },
+    {
+      "xid": 2896650669,
+      "op": "readdirplus",
+      "start": 1794807842.545082,
+      "end": 1794807842.634915,
+      "seconds": 0.08983302116394043,
+      "status": 0,
+      "client_port": 48659
+    },
+    {
+      "xid": 2896651544,
+      "op": "readdirplus",
+      "start": 1794807849.227106,
+      "end": 1794807849.316814,
+      "seconds": 0.08970785140991211,
+      "status": 0,
+      "client_port": 48659
+    },
+    {
+      "xid": 2896650091,
+      "op": "getattr",
+      "start": 1794807838.03394,
+      "end": 1794807838.122496,
+      "seconds": 0.08855581283569336,
+      "status": 0,
+      "client_port": 48659
+    },
+    {
+      "xid": 2896649194,
+      "op": "getattr",
+      "start": 1794807831.191708,
+      "end": 1794807831.276463,
+      "seconds": 0.08475494384765625,
+      "status": 0,
+      "client_port": 48659
+    }
+  ],
+  "longest_writes": [
+    {
+      "xid": 2896648773,
+      "op": "write",
+      "start": 1794807827.930937,
+      "end": 1794807828.065722,
+      "seconds": 0.13478493690490723,
+      "status": 0,
+      "client_port": 48659
+    },
+    {
+      "xid": 2896648398,
+      "op": "write",
+      "start": 1794807824.990115,
+      "end": 1794807825.122929,
+      "seconds": 0.1328141689300537,
+      "status": 0,
+      "client_port": 48659
+    },
+    {
+      "xid": 2896651359,
+      "op": "write",
+      "start": 1794807847.823368,
+      "end": 1794807847.955289,
+      "seconds": 0.13192081451416016,
+      "status": 0,
+      "client_port": 48659
+    }
+  ]
+}

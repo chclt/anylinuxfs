@@ -1,0 +1,180 @@
+[
+  {
+    "start": 1794808255.107908,
+    "duration": 0.016220625024288893,
+    "requests": [
+      {
+        "xid": 2896654088,
+        "op": "lookup",
+        "send_after_start": 0.00032210350036621094,
+        "host_rtt": 0.011000871658325195,
+        "guest_rtt": 0.010895967483520508,
+        "outside_guest": 0.0001049041748046875,
+        "host_end_after_start": 0.011322975158691406
+      },
+      {
+        "xid": 2896654089,
+        "op": "readdirplus",
+        "send_after_start": 0.0020499229431152344,
+        "host_rtt": 0.014029979705810547,
+        "guest_rtt": 0.013679027557373047,
+        "outside_guest": 0.0003509521484375,
+        "host_end_after_start": 0.01607990264892578
+      },
+      {
+        "xid": 2896654094,
+        "op": "create",
+        "send_after_start": 0.0161740779876709,
+        "host_rtt": 0.009889841079711914,
+        "guest_rtt": 0.009686946868896484,
+        "outside_guest": 0.0002028942108154297,
+        "host_end_after_start": 0.026063919067382812
+      },
+      {
+        "xid": 2896654095,
+        "op": "lookup",
+        "send_after_start": 0.01617908477783203,
+        "host_rtt": 0.009884834289550781,
+        "guest_rtt": 0.009727954864501953,
+        "outside_guest": 0.00015687942504882812,
+        "host_end_after_start": 0.026063919067382812
+      }
+    ]
+  },
+  {
+    "start": 1794808255.627962,
+    "duration": 2.75297366688028,
+    "requests": [
+      {
+        "xid": 2896654330,
+        "op": "getattr",
+        "send_after_start": 7.295608520507812e-05,
+        "host_rtt": 0.8768689632415771,
+        "guest_rtt": 0.04155421257019043,
+        "outside_guest": 0.8353147506713867,
+        "host_end_after_start": 0.8769419193267822
+      },
+      {
+        "xid": 2896654588,
+        "op": "readdirplus",
+        "send_after_start": 1.784881830215454,
+        "host_rtt": 0.9678630828857422,
+        "guest_rtt": 0.1382148265838623,
+        "outside_guest": 0.8296482563018799,
+        "host_end_after_start": 2.7527449131011963
+      }
+    ]
+  },
+  {
+    "start": 1794808258.8810198,
+    "duration": 1.0938267919700593,
+    "requests": []
+  },
+  {
+    "start": 1794808260.479244,
+    "duration": 2.4603740000166,
+    "requests": []
+  },
+  {
+    "start": 1794808263.4434528,
+    "duration": 1.9053972919937223,
+    "requests": [
+      {
+        "xid": 2896655464,
+        "op": "getattr",
+        "send_after_start": 7.104873657226562e-05,
+        "host_rtt": 0.6159331798553467,
+        "guest_rtt": 0.035948991775512695,
+        "outside_guest": 0.579984188079834,
+        "host_end_after_start": 0.616004228591919
+      },
+      {
+        "xid": 2896655722,
+        "op": "readdirplus",
+        "send_after_start": 1.2641880512237549,
+        "host_rtt": 0.64103102684021,
+        "guest_rtt": 0.07287001609802246,
+        "outside_guest": 0.5681610107421875,
+        "host_end_after_start": 1.9052190780639648
+      }
+    ]
+  },
+  {
+    "start": 1794808265.853714,
+    "duration": 1.0159689169377089,
+    "requests": []
+  },
+  {
+    "start": 1794808267.370016,
+    "duration": 1.8519577078986913,
+    "requests": []
+  },
+  {
+    "start": 1794808269.726794,
+    "duration": 2.7637052920181304,
+    "requests": [
+      {
+        "xid": 2896656579,
+        "op": "getattr",
+        "send_after_start": 0.9213979244232178,
+        "host_rtt": 0.8930180072784424,
+        "guest_rtt": 0.060189008712768555,
+        "outside_guest": 0.8328289985656738,
+        "host_end_after_start": 1.8144159317016602
+      },
+      {
+        "xid": 2896656708,
+        "op": "readdirplus",
+        "send_after_start": 1.8144769668579102,
+        "host_rtt": 0.9490411281585693,
+        "guest_rtt": 0.15608906745910645,
+        "outside_guest": 0.7929520606994629,
+        "host_end_after_start": 2.7635180950164795
+      }
+    ]
+  },
+  {
+    "start": 1794808272.9925,
+    "duration": 0.9111084579490125,
+    "requests": []
+  },
+  {
+    "start": 1794808274.405828,
+    "duration": 1.7435079170390964,
+    "requests": []
+  },
+  {
+    "start": 1794808276.6543639,
+    "duration": 2.770620749797672,
+    "requests": [
+      {
+        "xid": 2896657586,
+        "op": "getattr",
+        "send_after_start": 0.9937272071838379,
+        "host_rtt": 0.8594648838043213,
+        "guest_rtt": 0.09430599212646484,
+        "outside_guest": 0.7651588916778564,
+        "host_end_after_start": 1.8531920909881592
+      },
+      {
+        "xid": 2896657720,
+        "op": "readdirplus",
+        "send_after_start": 1.8532311916351318,
+        "host_rtt": 0.9172308444976807,
+        "guest_rtt": 0.11404609680175781,
+        "outside_guest": 0.8031847476959229,
+        "host_end_after_start": 2.7704620361328125
+      }
+    ]
+  },
+  {
+    "start": 1794808279.928679,
+    "duration": 2.699698291020468,
+    "requests": []
+  },
+  {
+    "start": 1794808283.133474,
+    "duration": 0.4746554580051452,
+    "requests": []
+  }
+]

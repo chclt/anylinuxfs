@@ -1,0 +1,101 @@
+{
+  "candidate": "unmodified AFT v4.6",
+  "small_create_fsync_fresh_session_hash": true,
+  "rename_overwrite_truncate_fresh_session_hash": true,
+  "cross_directory_rename": "EXDEV, explicitly unsupported in upstream",
+  "large_write": {
+    "start": 1794803987.340428,
+    "bytes_accepted": 478481295,
+    "name": "large-CHEN.mp4",
+    "elapsed_seconds": 118.86386620812118,
+    "source_sha256": "54891e473609cfa199cdee4f6b989a73ad185a73bc664a123600af6a9a2a6cef",
+    "write_seconds": 118.8647023329977,
+    "fsync_seconds": 0.12978425016626716,
+    "fsync_passed": true,
+    "total_seconds": 118.99940249999054,
+    "success": true
+  },
+  "large_write_concurrency": {
+    "directory_samples": 103,
+    "directory_timeout_count": 101,
+    "nfs_not_responding_samples": 32,
+    "sample_period_seconds": 1
+  },
+  "large_fresh_session_read": {
+    "response": {
+      "returncode": 0,
+      "stdout": "{\"empty.bin\": {\"size\": 0, \"sha256\": \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\", \"seconds\": 0.051319582999999724}, \"\\u4e2d\\u6587-small.bin\": {\"size\": 131072, \"sha256\": \"3bcfb99d9c754ca251033df8cd80bf9f6752ff6a67bd53f016b912fe8ae732a3\", \"seconds\": 0.019503832999999915}, \"renamed.bin\": {\"size\": 8192, \"sha256\": \"dc404a613fedaeb54034514bc6505f56b933caa5250299ba7d094377a51caa46\", \"seconds\": 0.009448416999999765}, \"large-CHEN.mp4\": {\"size\": 478481295, \"sha256\": \"54891e473609cfa199cdee4f6b989a73ad185a73bc664a123600af6a9a2a6cef\", \"seconds\": 75.090058869}}\n",
+      "stderr": "",
+      "seconds": 75.211829077
+    },
+    "matches": true
+  },
+  "conditions": "generic NFS with one server thread, 1 vCPU/512 MiB, same USB trace, no first-party MTP filesystem or NFS relay",
+  "interpretation": "Small operations pass. Large write plus metadata queries fails responsiveness in this configuration. Does not isolate driver vs generic NFS scheduling or transport.",
+  "test_directory_cleanup": [
+    {
+      "op": "unlink",
+      "time": 1794804283.825501,
+      "name": "empty.bin",
+      "seconds": 0.05280295806005597
+    },
+    {
+      "op": "unlink",
+      "time": 1794804283.871114,
+      "name": "中文-small.bin",
+      "seconds": 0.04533912497572601
+    },
+    {
+      "op": "unlink",
+      "time": 1794804283.897278,
+      "name": "renamed.bin",
+      "seconds": 0.02591812494210899
+    },
+    {
+      "op": "unlink",
+      "time": 1794804284.068107,
+      "name": "large-CHEN.mp4",
+      "seconds": 0.17047687503509223
+    },
+    {
+      "op": "rmdir_subdir",
+      "time": 1794804284.143632
+    },
+    {
+      "op": "rmdir_test_directory",
+      "time": 1794804284.279915
+    },
+    {
+      "op": "verify_absent",
+      "time": 1794804284.281066,
+      "absent": true
+    }
+  ],
+  "sessions": {
+    "aft-rw-01": {
+      "time": 1794803823.3703475,
+      "stage": "complete",
+      "driver_exit": 0
+    },
+    "aft-rw-02": {
+      "time": 1794803911.6329467,
+      "stage": "complete",
+      "driver_exit": 0
+    },
+    "aft-rw-03": {
+      "time": 1794804139.5682514,
+      "stage": "complete",
+      "driver_exit": 0
+    },
+    "aft-rw-04": {
+      "time": 1794804297.2705302,
+      "stage": "complete",
+      "driver_exit": 0
+    }
+  },
+  "remaining_checks": [
+    "Do not treat fsync success and clean remount as evidence for crash/unplug durability",
+    "Large-write responsiveness cause requires isolation of generic NFS vs FUSE/USB, without upstream behavior patches",
+    "Finder copy/move behavior not yet exercised for this upstream candidate"
+  ]
+}

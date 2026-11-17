@@ -1,0 +1,49 @@
+[
+  {
+    "op": "rename_same_directory",
+    "time": 1794803891.471603,
+    "seconds": 0.015507665928453207
+  },
+  {
+    "op": "overwrite_and_fsync",
+    "time": 1794803891.4844642,
+    "seconds": 0.012445833999663591
+  },
+  {
+    "op": "truncate_and_fsync",
+    "time": 1794803891.491668,
+    "seconds": 0.0069166249595582485
+  },
+  {
+    "op": "mkdir_subdir",
+    "time": 1794803891.5273018
+  },
+  {
+    "op": "rename_across_directories",
+    "time": 1794803891.533795,
+    "errno": 18,
+    "error": "[Errno 18] Cross-device link: 'tmp/mtp-upstream-evaluation/mount/Internal storage/ALFS-Upstream-AFT-20261116-123616/empty.bin' -> 'tmp/mtp-upstream-evaluation/mount/Internal storage/ALFS-Upstream-AFT-20261116-123616/subdir/empty.bin'"
+  },
+  {
+    "op": "same_mount_hash",
+    "time": 1794803891.534166,
+    "name": "empty.bin",
+    "matches": true
+  },
+  {
+    "op": "same_mount_hash",
+    "time": 1794803891.567302,
+    "name": "中文-small.bin",
+    "matches": true
+  },
+  {
+    "op": "same_mount_hash",
+    "time": 1794803891.567892,
+    "name": "renamed.bin",
+    "matches": true
+  },
+  {
+    "op": "complete",
+    "time": 1794803891.5680919
+  }
+]

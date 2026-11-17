@@ -1,0 +1,133 @@
+{
+  "writes": [
+    {
+      "fh": "01000181000000000000000070480f0001000000",
+      "bytes": 4270,
+      "requests": 3,
+      "first_request": 1794810387.712543,
+      "last_reply": 1794810387.751384,
+      "write_span_seconds": 0.03884100914001465,
+      "peak_outstanding": 1,
+      "errors": 0
+    },
+    {
+      "fh": "01000181000000000000000072480f0001000000",
+      "bytes": 5625,
+      "requests": 11,
+      "first_request": 1794810828.766083,
+      "last_reply": 1794810954.908599,
+      "write_span_seconds": 126.14251589775085,
+      "peak_outstanding": 1,
+      "errors": 0
+    },
+    {
+      "fh": "01000181000000000000000074480f0001000000",
+      "bytes": 4212,
+      "requests": 3,
+      "first_request": 1794810828.816655,
+      "last_reply": 1794810955.003283,
+      "write_span_seconds": 126.18662810325623,
+      "peak_outstanding": 1,
+      "errors": 0
+    },
+    {
+      "fh": "01000181000000000000000076480f0001000000",
+      "bytes": 5625,
+      "requests": 11,
+      "first_request": 1794810828.85267,
+      "last_reply": 1794811087.450111,
+      "write_span_seconds": 258.59744095802307,
+      "peak_outstanding": 1,
+      "errors": 0
+    },
+    {
+      "fh": "01000181000000000000000071480f0001000000",
+      "bytes": 478481295,
+      "requests": 14603,
+      "first_request": 1794810828.905624,
+      "last_reply": 1794810954.879859,
+      "write_span_seconds": 125.97423505783081,
+      "peak_outstanding": 1,
+      "errors": 0
+    },
+    {
+      "fh": "01000181000000000000000073480f0001000000",
+      "bytes": 155648,
+      "requests": 5,
+      "first_request": 1794810954.94959,
+      "last_reply": 1794810954.994426,
+      "write_span_seconds": 0.04483604431152344,
+      "peak_outstanding": 1,
+      "errors": 0
+    },
+    {
+      "fh": "01000181000000000000000077480f0001000000",
+      "bytes": 4270,
+      "requests": 3,
+      "first_request": 1794810955.056679,
+      "last_reply": 1794810955.070044,
+      "write_span_seconds": 0.013365030288696289,
+      "peak_outstanding": 1,
+      "errors": 0
+    },
+    {
+      "fh": "01000181000000000000000075480f0001000000",
+      "bytes": 448011641,
+      "requests": 13673,
+      "first_request": 1794810955.110378,
+      "last_reply": 1794811087.374374,
+      "write_span_seconds": 132.263995885849,
+      "peak_outstanding": 1,
+      "errors": 0
+    },
+    {
+      "fh": "01000181000000000000000079480f0001000000",
+      "bytes": 4212,
+      "requests": 3,
+      "first_request": 1794811188.234081,
+      "last_reply": 1794811188.384241,
+      "write_span_seconds": 0.1501600742340088,
+      "peak_outstanding": 1,
+      "errors": 0
+    },
+    {
+      "fh": "01000181000000000000000078480f0001000000",
+      "bytes": 360448,
+      "requests": 11,
+      "first_request": 1794811188.275188,
+      "last_reply": 1794811188.380852,
+      "write_span_seconds": 0.10566401481628418,
+      "peak_outstanding": 1,
+      "errors": 0
+    }
+  ],
+  "unexpected_rpc_status": [
+    {
+      "xid": 2896694157,
+      "record_start": 501496,
+      "record_end": 501672,
+      "arrival": 1794810388.834178,
+      "ready": 1794810388.834178,
+      "client_port": 50110,
+      "proc": 17,
+      "fh": "010001810000000000000000db430f0001000000",
+      "op": "readdirplus",
+      "reply_arrival": 1794810388.843348,
+      "reply_ready": 1794810388.843348,
+      "seconds": 0.009170055389404297,
+      "first_byte_seconds": 0.009170055389404297,
+      "status": 5,
+      "object_fh": null
+    }
+  ],
+  "read_bytes_in_responses_not_parsed": "about 100 MB total response stream includes Quick Look traffic and metadata",
+  "video_batch_write_span_seconds": 258.46875,
+  "directory_samples_during_video_copy": {
+    "count": 502,
+    "median_seconds": 0.006241103983484209,
+    "p95_seconds": 0.06313408305868506,
+    "max_seconds": 0.1371483749244362,
+    "errors": 0,
+    "clock_note": "guest/host timestamps close; edge samples may differ by clock offset. All-run monitor also retained."
+  }
+}

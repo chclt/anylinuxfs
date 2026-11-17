@@ -1,0 +1,17 @@
+{
+  "directory": "ALFS-Upstream-Finder-Sync-20261116",
+  "files": {
+    "CHEN_5min_MIP04_Master_H264.mp4": {
+      "size": 478481295,
+      "sha256": "54891e473609cfa199cdee4f6b989a73ad185a73bc664a123600af6a9a2a6cef"
+    },
+    "WAN_5min_MIP01_Master_H264.mp4": {
+      "size": 448011641,
+      "sha256": "f07bbaa3cbf6b45cf3cb7f141f8505dcd514e0ebffd0c533335825913c711362"
+    },
+    "overwrite.bin": {
+      "size": 360448,
+      "sha256": "ea50e19d41dbfd43f98a27bc4ab40211ff7e55df892f5e111fcebaa78c45cc4f"
+    }
+  }
+}

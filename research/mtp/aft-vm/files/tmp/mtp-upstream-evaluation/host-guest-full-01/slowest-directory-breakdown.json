@@ -1,0 +1,92 @@
+{
+  "syscall": {
+    "time": 1794808276.6543639,
+    "seconds": 2.770620749797672
+  },
+  "rpc_sequence": [
+    {
+      "xid": 2896657480,
+      "op": "getattr",
+      "object": "other",
+      "send_after_start": 0.19757604598999023,
+      "reply_after_start": 1.1787450313568115,
+      "host_rtt": 0.9811689853668213,
+      "guest_rtt": 0.0997469425201416,
+      "host_unanswered_writes": 128,
+      "host_unanswered_write_bytes": 4194304,
+      "guest_unanswered_writes": 12
+    },
+    {
+      "xid": 2896657489,
+      "op": "access",
+      "object": "other",
+      "send_after_start": 0.2632732391357422,
+      "reply_after_start": 1.2046082019805908,
+      "host_rtt": 0.9413349628448486,
+      "guest_rtt": 0.055505990982055664,
+      "host_unanswered_writes": 128,
+      "host_unanswered_write_bytes": 4194304,
+      "guest_unanswered_writes": 9
+    },
+    {
+      "xid": 2896657586,
+      "op": "getattr",
+      "object": "test_directory",
+      "send_after_start": 0.9937272071838379,
+      "reply_after_start": 1.8531920909881592,
+      "host_rtt": 0.8594648838043213,
+      "guest_rtt": 0.09430599212646484,
+      "host_unanswered_writes": 128,
+      "host_unanswered_write_bytes": 4194304,
+      "guest_unanswered_writes": 12
+    },
+    {
+      "xid": 2896657615,
+      "op": "getattr",
+      "object": "other",
+      "send_after_start": 1.1788151264190674,
+      "reply_after_start": 1.9966890811920166,
+      "host_rtt": 0.8178739547729492,
+      "guest_rtt": 0.0552830696105957,
+      "host_unanswered_writes": 128,
+      "host_unanswered_write_bytes": 4194304,
+      "guest_unanswered_writes": 11
+    },
+    {
+      "xid": 2896657619,
+      "op": "access",
+      "object": "other",
+      "send_after_start": 1.2047030925750732,
+      "reply_after_start": 2.042065143585205,
+      "host_rtt": 0.8373620510101318,
+      "guest_rtt": 0.07213711738586426,
+      "host_unanswered_writes": 128,
+      "host_unanswered_write_bytes": 4194304,
+      "guest_unanswered_writes": 11
+    },
+    {
+      "xid": 2896657720,
+      "op": "readdirplus",
+      "object": "test_directory",
+      "send_after_start": 1.8532311916351318,
+      "reply_after_start": 2.7704620361328125,
+      "host_rtt": 0.9172308444976807,
+      "guest_rtt": 0.11404609680175781,
+      "host_unanswered_writes": 127,
+      "host_unanswered_write_bytes": 4161536,
+      "guest_unanswered_writes": 12
+    },
+    {
+      "xid": 2896657752,
+      "op": "lookup",
+      "object": "other",
+      "send_after_start": 2.042206048965454,
+      "reply_after_start": 2.9314041137695312,
+      "host_rtt": 0.8891980648040771,
+      "guest_rtt": 0.0496981143951416,
+      "host_unanswered_writes": 128,
+      "host_unanswered_write_bytes": 4194304,
+      "guest_unanswered_writes": 10
+    }
+  ]
+}

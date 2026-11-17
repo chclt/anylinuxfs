@@ -1,0 +1,37 @@
+--- a/fuse/fuse.cpp
++++ b/fuse/fuse.cpp
+@@ -254,13 +254,11 @@
+ 					return i->second;
+ 			}
+ 
+-			ChildrenObjects & cache = _files[inode];
++			// A failed enumeration must not publish an empty directory cache.
++			// Commit only after the query succeeds, so later callers retry.
++			ChildrenObjects cache;
+ 
+ 			using namespace mtp;
+-			if (inode == FuseId::Root)
+-			{
+-				return cache;
+-			}
+ 
+ 			msg::ObjectHandles oh;
+ 
+@@ -320,7 +318,7 @@
+ 					catch(const std::exception &ex)
+ 					{ }
+ 
+-					return cache;
++					return _files.emplace(inode, std::move(cache)).first->second;
+ 				}
+ 			}
+ 
+@@ -332,7 +330,7 @@
+ 				} catch(const std::exception &ex)
+ 				{ }
+ 			}
+-			return cache;
++			return _files.emplace(inode, std::move(cache)).first->second;
+ 		}
+ 
+ 		FuseId CreateObject(FuseId parentInode, const std::string &filename, mtp::ObjectFormat format)

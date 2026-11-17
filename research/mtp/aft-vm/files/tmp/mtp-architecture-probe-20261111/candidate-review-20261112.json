@@ -1,0 +1,39 @@
+{
+  "decision": "Retain macFUSE FSKit chunked scheme as candidate; reassess original VM+NFS architecture without new phone tests",
+  "user_priority": "stability before throughput",
+  "native_fskit": "comparison retained, blocked by Personal Team FSKit capability",
+  "confirmed_code_findings": [
+    {
+      "source": "scripts/jmtpfs-writeback-queue.patch",
+      "finding": "MtpWriteback::publish holds namespaceLock through snapshot->sync, including the whole remote upload and publication"
+    },
+    {
+      "source": "scripts/jmtpfs-writeback-queue.patch",
+      "finding": "readAt holds per-file recursive mutex across fetchRange; attributes acquires the same mutex"
+    },
+    {
+      "source": "scripts/jmtpfs-writeback-queue.patch",
+      "finding": "relocate and beginRemoval synchronously materialize retained file contents"
+    },
+    {
+      "source": "scripts/jmtpfs-writeback.patch",
+      "finding": "SendFile uses one LIBMTP_Send_File_From_File_Descriptor transfer"
+    }
+  ],
+  "evidence": "Prior NFS RPCs blocked 20-31 seconds; synthetic delayed operations returned JUKEBOX but macOS still flagged not responding. Recent macFUSE combined tests also blocked before chunking, while chunking reduced waits. Thus frontend replacement alone is not established as necessary.",
+  "proposed_direction": [
+    "Keep host VM/NFS lifecycle initially",
+    "Separate local namespace and durable state from protocol execution",
+    "Run one MTP owner with short transactions and explicit scheduling, first on known supported Samsung",
+    "Do not hold namespace/file-metadata locks over USB waits; pin immutable versions and reconcile publication by generation",
+    "Implement open-handle delete/rename semantics via deferred remote cleanup and stable logical identity, rather than mandatory synchronous materialization",
+    "Acknowledge NFS stable writes only after durable local data plus replayable metadata; remote-sync completion remains separate",
+    "Handle unsupported capabilities, device stalls and USB forwarding overhead explicitly"
+  ],
+  "limitations": [
+    "No VM/NFS integration test of chunked scheduler yet",
+    "MTP editing extensions not universal",
+    "Cannot guarantee silent responsiveness during arbitrary device stalls or missing uncached data",
+    "Not changing production code or NFS timeout defaults in this review"
+  ]
+}

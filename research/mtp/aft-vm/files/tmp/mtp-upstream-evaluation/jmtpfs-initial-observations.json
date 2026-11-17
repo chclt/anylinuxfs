@@ -1,0 +1,35 @@
+{
+  "time": 1794802865.8578181,
+  "candidate": "jmtpfs v0.5",
+  "directory_export": "Mac NFS mount and listing succeeded",
+  "invalid_storage_mtime": {
+    "guest": 281472884045168,
+    "mac_nfs": 2201990688,
+    "source": "MtpFolder::getMetadata storage root does not initialize modificationdate; getattr reads it"
+  },
+  "guest_ls": {
+    "exit": -11,
+    "independent_python_listing": "passed"
+  },
+  "large_read_default_tmp": {
+    "result": "failed",
+    "temp_filesystem": "tmpfs",
+    "capacity_MiB": 240.9,
+    "used_percent": 100,
+    "nfs_not_responding": true,
+    "client_error": "EIO",
+    "normal_shutdown": "timed out; dedicated host experiment terminated after NFS mount was gone"
+  },
+  "read_only_phone_mutations": false,
+  "disk_temp_retry": {
+    "result": "No mtp devices found",
+    "remaining": "requires recovered phone session; not yet tested"
+  },
+  "boundary": "Do not infer all upstream drivers fail from this result; no source patches applied.",
+  "disk_temp_retry_after_mode_switch": {
+    "run": "jmtpfs-ro-disk-02",
+    "result": "OpenSession I/O failure and mount readiness timeout",
+    "large_file_read_started": false,
+    "driver_source_modified": false
+  }
+}

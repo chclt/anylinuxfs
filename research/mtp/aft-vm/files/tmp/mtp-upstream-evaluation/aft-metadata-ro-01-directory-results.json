@@ -1,0 +1,6 @@
+{
+  "returncode": 0,
+  "stdout": "{\"attempt\": 1, \"error\": \"[Errno 5] I/O error: '/mnt/upstream/Internal storage/Android/data/org.videolan.vlc/files/medialib'\", \"errno\": 5, \"seconds\": 0.38338420899999903}\n{\"attempt\": 2, \"entries\": [], \"seconds\": 0.004356416000000252}\n{\"attempt\": 3, \"entries\": [], \"seconds\": 0.0019315830000010692}\n{\"timezone\": [\"UTC\", \"UTC\"], \"TZ\": null}\n",
+  "stderr": "",
+  "seconds": 0.4237513749999984
+}

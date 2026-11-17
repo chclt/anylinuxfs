@@ -1,0 +1,20 @@
+{
+  "candidate": "AFT v4.6",
+  "run": "aft-ro-01",
+  "bytes": 478481295,
+  "sha256_matches": true,
+  "total_seconds": 77.56464912509546,
+  "first_read_seconds": 0.22743558301590383,
+  "directory_max_seconds": 0.18572254199534655,
+  "directory_errors": [],
+  "nfs_not_responding_samples": 0,
+  "driver_logged_error": "ReadDir InvalidObjectHandle 0x2009; target directory not identified",
+  "normal_host_unmount": "passed",
+  "guest_cleanup": {
+    "time": 1794803562.213932,
+    "stage": "complete",
+    "driver_exit": 0
+  },
+  "phone_file_writes": false,
+  "limitation": "Single run, not a throughput benchmark or evidence of writable suitability"
+}

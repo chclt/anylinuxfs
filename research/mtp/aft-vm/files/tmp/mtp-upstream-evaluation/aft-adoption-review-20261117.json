@@ -1,0 +1,38 @@
+{
+  "directory_mode": {
+    "returncode": 0,
+    "stdout": "2700:10401:1078",
+    "stderr": ""
+  },
+  "directory_permission_log": {
+    "returncode": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "timezone_test": {
+    "TZ": "CST-8",
+    "mtime": 1794470392.0,
+    "size": 478481295,
+    "matches_phone_stat": true
+  },
+  "fuse_exit": {
+    "returncode": 0
+  },
+  "capability_probe": "directory_id 172\nBEGIN directory_object_info\nname medialib modified 20261110T190712\nOK directory_object_info\nBEGIN children_selected_storage\nERROR children_selected_storage Get: invalid response code InvalidObjectHandle (0x2009)\nBEGIN children_all_storages\nERROR children_all_storages Get: invalid response code InvalidObjectHandle (0x2009)\nBEGIN child_filename_property_list\nERROR child_filename_property_list Get: invalid response code InvalidObjectHandle (0x2009)\nBEGIN date_modified_capability\nproperty 56329 get_set 0\nOK date_modified_capability\nBEGIN video_raw_date\ninfo_modified 20261112T155952 property_modified 20261112T155952\nparsed UTC0 1794499192\nparsed CST-8 1794470392\nOK video_raw_date\nclosing_session\nclosed_session\n",
+  "accepted_preferences": {
+    "sync_cost": "about 15% slower is acceptable",
+    "directory": "confirm device-side access restriction; do not try to bypass phone permissions",
+    "timezone": "attempt simple correction; unresolved limitation acceptable",
+    "mtime_preservation": "attempt within reasonable scope; unresolved limitation acceptable"
+  },
+  "limitations": [
+    "DateModified GetSet=0 verified for this device and tested video object format, not every device/format.",
+    "Timezone-only fix verified with fixed UTC+8 for this phone; general use must handle phone/host zone mismatch and DST, and does not require ADB as a product dependency.",
+    "Creation-time metadata may differ from setting an existing object; not tested here."
+  ],
+  "next_tests": [
+    "Interrupt copy and check bounded error/normal unmount; reconnect and verify completed files plus partial-file behavior.",
+    "Large-file overwrite, cancel, cross-directory move and rename, with readback verification.",
+    "Repeat focused regression on Huawei HarmonyOS and Xiaomi; do not transfer custom-driver conclusions to AFT."
+  ]
+}

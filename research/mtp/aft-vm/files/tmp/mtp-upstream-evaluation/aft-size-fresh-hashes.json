@@ -1,0 +1,6 @@
+{
+  "returncode": 0,
+  "stdout": "{\"ALFS-Upstream-W32-128-20261116\": {\"bytes\": 134217728, \"sha256\": \"5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01\", \"seconds\": 20.137900343, \"matches\": true}, \"ALFS-Upstream-W8-128-20261116\": {\"bytes\": 134217728, \"sha256\": \"5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01\", \"seconds\": 20.678170342999998, \"matches\": true}, \"ALFS-Upstream-NoDirPlus-128-20261116\": {\"bytes\": 134217728, \"sha256\": \"5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01\", \"seconds\": 23.957630011000006, \"matches\": true}, \"ALFS-Upstream-Dual-128-20261116\": {\"bytes\": 134217728, \"sha256\": \"5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01\", \"seconds\": 23.005870970000004, \"matches\": true}}\n",
+  "stderr": "",
+  "seconds": 87.87819537499999
+}

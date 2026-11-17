@@ -1,0 +1,6 @@
+{
+  "returncode": 0,
+  "stdout": "{\"ALFS-Upstream-NFS4-20261116-01\": {\"bytes\": 478481295, \"sha256\": \"54891e473609cfa199cdee4f6b989a73ad185a73bc664a123600af6a9a2a6cef\", \"seconds\": 73.20710470200001, \"matches\": true}, \"ALFS-Upstream-Timer-20261116-01\": {\"bytes\": 478481295, \"sha256\": \"54891e473609cfa199cdee4f6b989a73ad185a73bc664a123600af6a9a2a6cef\", \"seconds\": 75.96124182800001, \"matches\": true}}\n",
+  "stderr": "",
+  "seconds": 149.225216113
+}

@@ -1,0 +1,94 @@
+{
+  "stage": "readonly first pass",
+  "results": [
+    {
+      "driver": "jmtpfs v0.5",
+      "run": "jmtpfs-ro-disk-03",
+      "bytes": 478481295,
+      "hash_matches": true,
+      "first_read_seconds": 42.11078837513924,
+      "total_seconds": 51.100254958029836,
+      "directory_max_seconds": 5.223572832997888,
+      "directory_errors": [
+        {
+          "seconds": 5.223572832997888,
+          "error": "[Errno 60] Operation timed out: '/Users/jike/Developer/chclt/anylinuxfs/tmp/mtp-upstream-evaluation/mount/Internal storage/ALFS-Finder-Test-20261112-140129'"
+        }
+      ],
+      "nfs_not_responding_samples": 36,
+      "normal_host_unmount": true,
+      "guest_cleanup": {
+        "time": 1794803352.0552785,
+        "stage": "complete",
+        "driver_exit": 0
+      }
+    },
+    {
+      "driver": "go-mtpfs v1.0.1",
+      "run": "go-mtpfs-ro-02",
+      "bytes": 478481295,
+      "hash_matches": true,
+      "first_read_seconds": 28.072784499963745,
+      "total_seconds": 34.00411108392291,
+      "directory_max_seconds": 7.601282666902989,
+      "directory_errors": [],
+      "nfs_not_responding_samples": 19,
+      "normal_host_unmount": true,
+      "guest_cleanup": {
+        "time": 1794803433.4113097,
+        "stage": "complete",
+        "driver_exit": 0
+      }
+    },
+    {
+      "driver": "AFT v4.6",
+      "run": "aft-ro-01",
+      "bytes": 478481295,
+      "hash_matches": true,
+      "first_read_seconds": 0.22743558301590383,
+      "total_seconds": 77.56464912509546,
+      "directory_max_seconds": 0.18572254199534655,
+      "directory_errors": [],
+      "nfs_not_responding_samples": 0,
+      "normal_host_unmount": true,
+      "guest_cleanup": {
+        "time": 1794803562.213932,
+        "stage": "complete",
+        "driver_exit": 0
+      }
+    },
+    {
+      "driver": "simple-mtpfs v0.4.0",
+      "run": "simple-ro-01",
+      "bytes": 478481295,
+      "hash_matches": true,
+      "first_read_seconds": 4.471074166940525,
+      "total_seconds": 68.10609337501228,
+      "directory_max_seconds": 0.29015404218807817,
+      "directory_errors": [],
+      "nfs_not_responding_samples": 4,
+      "normal_host_unmount": true,
+      "guest_cleanup": {
+        "time": 1794803707.4168475,
+        "stage": "complete",
+        "driver_exit": 0
+      }
+    }
+  ],
+  "conditions": {
+    "same_device": "Samsung Z Fold 6 04e8:6860",
+    "file": "CHEN_5min_MIP04_Master_H264.mp4",
+    "vm": "1 CPU, 512 MiB, disk-backed /tmp",
+    "nfs": "standard kernel NFS, 1 server thread, identical host options",
+    "usb_trace": true,
+    "driver_behavior_patches": false,
+    "phone_file_writes": false
+  },
+  "limits": [
+    "One run each; background directory activity and tracing included, not pure-throughput ranking",
+    "NFS not-responding is sampled state, not observed UI popup count",
+    "AFT logged a ReadDir InvalidObjectHandle error outside the monitored directory; exact target unknown",
+    "No write, fsync durability, rename, overwrite or write-disconnect conclusions yet"
+  ],
+  "next": "Prioritize AFT small dedicated-directory write, fsync, normal unmount/reopen and hash checks; preserve other candidates pending evidence"
+}

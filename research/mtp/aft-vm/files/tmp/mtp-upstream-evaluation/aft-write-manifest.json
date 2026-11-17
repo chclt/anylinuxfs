@@ -1,0 +1,17 @@
+{
+  "directory": "ALFS-Upstream-AFT-20261116-123616",
+  "files": {
+    "empty.bin": {
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "small.bin": {
+      "size": 4096,
+      "sha256": "ad62df0be2f78dc3416bfdc7231e15b62a5b54b6226bd903fafd3015d8135d59"
+    },
+    "中文-small.bin": {
+      "size": 1048576,
+      "sha256": "a748b177758db4ea645cd4ac8b684d923396741109994b23781ede4036d332f6"
+    }
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "date": "2026-11-17",
+  "production_changes": false,
+  "device_writes": false,
+  "upstream": "AFT v4.6 712dce6ea71793f6f8454e8ce75a0fd4ea553226",
+  "directory": {
+    "path": "Internal storage/Android/data/org.videolan.vlc/files/medialib",
+    "fuse_reproduction": {
+      "returncode": 0,
+      "stdout": "{\"attempt\": 1, \"error\": \"[Errno 5] I/O error: '/mnt/upstream/Internal storage/Android/data/org.videolan.vlc/files/medialib'\", \"errno\": 5, \"seconds\": 0.38338420899999903}\n{\"attempt\": 2, \"entries\": [], \"seconds\": 0.004356416000000252}\n{\"attempt\": 3, \"entries\": [], \"seconds\": 0.0019315830000010692}\n{\"timezone\": [\"UTC\", \"UTC\"], \"TZ\": null}\n",
+      "stderr": "",
+      "seconds": 0.4237513749999984
+    },
+    "protocol_probe_log": "directory_id 172\nBEGIN directory_object_info\nname medialib modified 20261110T190712\nOK directory_object_info\nBEGIN children_selected_storage\nERROR children_selected_storage Get: invalid response code InvalidObjectHandle (0x2009)\nBEGIN children_all_storages\nERROR children_all_storages Get: invalid response code InvalidObjectHandle (0x2009)\nBEGIN child_filename_property_list\nERROR child_filename_property_list Get: invalid response code InvalidObjectHandle (0x2009)\nBEGIN video_raw_date\ninfo_modified 20261112T155952 property_modified 20261112T155952\nparsed UTC0 1794499192\nparsed CST-8 1794470392\nOK video_raw_date\nclosing_session\nclosed_session\n",
+    "phone_directory_read": {
+      "returncode": 1,
+      "stderr": "ls: /sdcard/Android/data/org.videolan.vlc/files/medialib: Permission denied",
+      "entry_count": 0
+    },
+    "conclusion": "Device reports valid directory ObjectInfo but rejects child handle enumeration and child filename property-list requests with InvalidObjectHandle. AFT inserts directory cache before query; subsequent calls return cached empty directory after first failure. ADB shell also receives Permission denied; exact phone MTP internal mapping not proven."
+  },
+  "timestamps": {
+    "preserve_requests_confirmed": [
+      {
+        "name": "CHEN_5min_MIP04_Master_H264.mp4",
+        "requested_epoch": 1776327619,
+        "nfs_status": 0
+      },
+      {
+        "name": "WAN_5min_MIP01_Master_H264.mp4",
+        "requested_epoch": 1776327741,
+        "nfs_status": 0
+      },
+      {
+        "name": "overwrite.bin",
+        "requested_epoch": 1794810990,
+        "nfs_status": 0
+      }
+    ],
+    "source_behavior": "SetAttr handles SIZE only and acknowledges other attrs. ConvertDateTime(str) uses strptime without timezone then mktime.",
+    "raw_device_date": "20261112T155952",
+    "fuse_epoch_UTC": 1794499192,
+    "phone_stat_epoch": 1794470392,
+    "phone_timezone": "Asia/Shanghai",
+    "difference_seconds": 28800,
+    "matching_process_TZ": "CST-8 parses the same string to phone stat epoch; not yet verified through another FUSE mount and not a universal fix for arbitrary device timezone or suffixed timestamps."
+  },
+  "evidence_files": [
+    "aft-metadata-offline-evidence.json",
+    "aft-metadata-phone-stat.json",
+    "aft-metadata-ro-01-time-stat.json",
+    "image/rootfs/opt/upstream/runs/aft-metadata-protocol-03/probe.log"
+  ],
+  "upstream_source_lines": {
+    "directory_cache": "fuse/fuse.cpp:250-275",
+    "setattr": "fuse/fuse.cpp:673-691",
+    "date_parser": "mtp/ptp/ObjectFormat.cpp:175-183"
+  },
+  "lifecycle": "Read-only FUSE and protocol VMs exited; protocol probe explicitly closed MTP session; no host NFS mount created.",
+  "decision": "Keep AFT+standard sync as a candidate. These compatibility limits cannot all be fixed by NFS timing parameters. Frozen upstream driver policy remains; no patch applied."
+}

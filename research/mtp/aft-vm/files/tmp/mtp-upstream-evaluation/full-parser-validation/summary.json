@@ -1,0 +1,91 @@
+{
+  "method": "TCP stream reassembly from SYN; complete RPC record parsing; timings use last request and reply byte",
+  "packets": 52474,
+  "truncated_data_packets": 0,
+  "flows": [
+    {
+      "ports": [
+        49792,
+        2049
+      ],
+      "stream_bytes": 156773860,
+      "records": 6085,
+      "gap": null,
+      "incomplete_tail": false
+    },
+    {
+      "ports": [
+        2049,
+        49792
+      ],
+      "stream_bytes": 2015996,
+      "records": 6085,
+      "gap": null,
+      "incomplete_tail": false
+    },
+    {
+      "ports": [
+        32311,
+        2049
+      ],
+      "stream_bytes": 1056,
+      "records": 12,
+      "gap": null,
+      "incomplete_tail": false
+    },
+    {
+      "ports": [
+        2049,
+        32311
+      ],
+      "stream_bytes": 1392,
+      "records": 12,
+      "gap": null,
+      "incomplete_tail": false
+    },
+    {
+      "ports": [
+        50891,
+        2049
+      ],
+      "stream_bytes": 67539812,
+      "records": 2583,
+      "gap": null,
+      "incomplete_tail": false
+    },
+    {
+      "ports": [
+        2049,
+        50891
+      ],
+      "stream_bytes": 718276,
+      "records": 2583,
+      "gap": null,
+      "incomplete_tail": false
+    }
+  ],
+  "calls": 8680,
+  "replies": 8680,
+  "paired": 8680,
+  "unmatched_calls": 0,
+  "status_counts": {
+    "None": 2,
+    "0": 8646,
+    "2": 32
+  },
+  "op_counts": {
+    "0": 2,
+    "getattr": 1557,
+    "19": 2,
+    "20": 2,
+    "fsstat": 40,
+    "lookup": 37,
+    "access": 52,
+    "read": 55,
+    "readdirplus": 12,
+    "create": 16,
+    "setattr": 21,
+    "write": 6813,
+    "commit": 71
+  }
+}

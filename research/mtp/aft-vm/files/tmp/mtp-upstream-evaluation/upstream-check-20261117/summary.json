@@ -1,0 +1,44 @@
+{
+  "checked_date": "2026-11-17",
+  "repo": "whoozle/android-file-transfer-linux",
+  "tested_tag": "v4.6",
+  "tested_sha": "712dce6ea71793f6f8454e8ce75a0fd4ea553226",
+  "master_sha": "e55d502ab9d7f7b631331a31331b6890b487c6de",
+  "latest_release": {
+    "tag": "v4.6",
+    "published_at": "2026-10-11T22:06:22Z",
+    "url": "https://github.com/whoozle/android-file-transfer-linux/releases/tag/v4.6"
+  },
+  "commits_ahead": 1,
+  "commits": [
+    {
+      "sha": "e55d502ab9d7f7b631331a31331b6890b487c6de",
+      "message": "bump version to 4.7"
+    }
+  ],
+  "changed_files": [
+    "README.md",
+    "android-file-transfer-linux.json"
+  ],
+  "fuse_cpp_identical": true,
+  "fuse_cpp_sha256": "7cb0b573e8823f92c37dc3c8a41ba1f021a061b9106cdc57d6ea68497a78055d",
+  "open_prs": [
+    {
+      "number": 359,
+      "title": "Improve macOS Locale Detection for Chinese Language Support",
+      "url": "https://github.com/whoozle/android-file-transfer-linux/pull/359"
+    }
+  ],
+  "mtime_issue": {
+    "number": 342,
+    "state": "open",
+    "comments": 5
+  },
+  "referenced_fix": {
+    "sha": "a1963af87b02344b692c2167024ae48b7815b3c2",
+    "scope": "Adds missing ObjectFormat parameter to GetObjectPropDesc; present in tested v4.6 source; does not implement FUSE setattr timestamps."
+  },
+  "conclusion": "No fix in current upstream release/master or open PR for the three observed issues. Current master is behaviorally identical for evaluated FUSE and date parser. Rebuilding master would not change those paths.",
+  "recommendation": "Retain AFT + sync candidate. Do not change NFS to conceal directory or timestamp semantics. Original-driver-only use must explicitly accept unsupported timestamp preservation and unresolved failed-directory cache bug; otherwise an upstream fix or explicitly authorized minimal driver change is necessary. Matching process TZ may correct this device\u2019s no-zone dates but cannot implement timestamp preservation.",
+  "changes": "Only ignored investigation records; production and upstream driver sources unchanged."
+}

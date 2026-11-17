@@ -1,0 +1,13 @@
+{
+  "adb_available": true,
+  "phone_timezone": {
+    "returncode": 0,
+    "stdout": "Asia/Shanghai",
+    "stderr": ""
+  },
+  "video_stat": {
+    "returncode": 1,
+    "stdout": "1794470392",
+    "stderr": "stat: '%s': No such file or directory"
+  }
+}

@@ -1,0 +1,2214 @@
+diff --git a/anylinuxfs/src/mtp_nfs.rs b/anylinuxfs/src/mtp_nfs.rs
+new file mode 100644
+index 0000000..e8f8bab
+--- /dev/null
++++ b/anylinuxfs/src/mtp_nfs.rs
+@@ -0,0 +1,533 @@
++//! Per-mount NFSv3 admission. Namespace consistency remains in the filesystem.
++//! The same loopback listener routes mountd RPCs during mount/unmount. It never
++//! synthesizes replies or reconnects a backend after an uncertain mutation.
++use anyhow::{Context, anyhow, ensure};
++use std::{
++    collections::{BTreeMap, BTreeSet, VecDeque},
++    io::{self, Read, Write},
++    net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream},
++    sync::{
++        Arc, Condvar, Mutex, MutexGuard,
++        atomic::{AtomicBool, Ordering},
++    },
++    thread::{self, JoinHandle},
++    time::Duration,
++};
++
++const WRITE_WINDOW: usize = 4;
++pub(crate) const CLIENT_HOST: &[u8] = b"127.0.0.1";
++const TOTAL_WINDOW: usize = 8;
++const BYTE_LIMIT: usize = 16 * 1024 * 1024;
++const REQUEST_LIMIT: usize = 8192;
++const RECORD_LIMIT: usize = 1024 * 1024;
++const CONNECTION_LIMIT: usize = 8;
++const READ_BURST: usize = 8;
++type Key = (u64, u32);
++
++fn record(stream: &TcpStream) -> anyhow::Result<Option<Vec<u8>>> {
++    let mut stream = stream;
++    let mut body = Vec::new();
++    loop {
++        let mut marker = [0; 4];
++        if stream.read(&mut marker[..1]).context("Read RPC marker")? == 0 {
++            ensure!(body.is_empty(), "Truncated RPC record");
++            return Ok(None);
++        }
++        stream
++            .read_exact(&mut marker[1..])
++            .context("Read RPC marker")?;
++        let marker = u32::from_be_bytes(marker);
++        let count = (marker & 0x7fff_ffff) as usize;
++        ensure!(
++            body.len() + count <= RECORD_LIMIT,
++            "RPC record exceeds limit"
++        );
++        let start = body.len();
++        body.resize(start + count, 0);
++        stream
++            .read_exact(&mut body[start..])
++            .context("Read RPC body")?;
++        if marker & 0x8000_0000 != 0 {
++            return Ok(Some(body));
++        }
++    }
++}
++fn send(stream: &TcpStream, body: &[u8]) -> anyhow::Result<()> {
++    let mut stream = stream;
++    stream
++        .write_all(&(0x8000_0000 | body.len() as u32).to_be_bytes())
++        .context("Write RPC marker")?;
++    stream.write_all(body).context("Write RPC body")
++}
++fn u32_at(body: &[u8], at: usize) -> anyhow::Result<u32> {
++    let b = body.get(at..at + 4).context("Truncated RPC integer")?;
++    Ok(u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
++}
++fn opaque(body: &[u8], at: &mut usize) -> anyhow::Result<Vec<u8>> {
++    let count = u32_at(body, *at)? as usize;
++    *at += 4;
++    let bytes = body
++        .get(*at..*at + count)
++        .context("Truncated RPC opaque")?
++        .to_vec();
++    *at += (count + 3) & !3;
++    ensure!(*at <= body.len(), "Truncated RPC padding");
++    Ok(bytes)
++}
++fn read_only(proc: u32) -> bool {
++    matches!(proc, 0 | 1 | 3 | 4 | 5 | 6 | 16..=20)
++}
++fn handles(body: &[u8], proc: u32) -> anyhow::Result<BTreeSet<Vec<u8>>> {
++    if read_only(proc) {
++        return Ok(BTreeSet::new());
++    }
++    let mut at = 24;
++    for _ in 0..2 {
++        at += 4;
++        opaque(body, &mut at)?;
++    }
++    let mut handles = BTreeSet::from([opaque(body, &mut at)?]);
++    if proc == 14 {
++        opaque(body, &mut at)?;
++        handles.insert(opaque(body, &mut at)?);
++    }
++    if proc == 15 {
++        handles.insert(opaque(body, &mut at)?);
++    }
++    Ok(handles)
++}
++struct Request {
++    key: Key,
++    proc: u32,
++    body: Vec<u8>,
++    handles: BTreeSet<Vec<u8>>,
++    server: Arc<TcpStream>,
++}
++struct Peer {
++    client: Arc<TcpStream>,
++    server: Option<Arc<TcpStream>>,
++    mutated: bool,
++}
++#[derive(Default)]
++struct State {
++    peers: BTreeMap<u64, Peer>,
++    pending: BTreeMap<Key, Arc<Request>>,
++    inflight: BTreeSet<Key>,
++    reads: VecDeque<Key>,
++    mutations: VecDeque<Key>,
++    bytes: usize,
++    read_streak: usize,
++    failure: Option<String>,
++}
++struct Shared {
++    state: Mutex<State>,
++    ready: Condvar,
++    stopped: AtomicBool,
++}
++impl Shared {
++    fn lock(&self) -> anyhow::Result<MutexGuard<'_, State>> {
++        self.state
++            .lock()
++            .map_err(|_| anyhow!("MTP NFS scheduler panicked"))
++    }
++    fn stop(&self, error: Option<String>) {
++        self.stopped.store(true, Ordering::Release);
++        if let Ok(mut state) = self.lock() {
++            if state.failure.is_none() {
++                state.failure = error;
++            }
++            for peer in state.peers.values() {
++                let _ = peer.client.shutdown(Shutdown::Both);
++                if let Some(server) = &peer.server {
++                    let _ = server.shutdown(Shutdown::Both);
++                }
++            }
++        }
++        self.ready.notify_all();
++    }
++    fn close_peer(&self, id: u64, error: Option<String>) -> anyhow::Result<()> {
++        let mut state = self.lock()?;
++        let Some(peer) = state.peers.get(&id) else {
++            return Ok(());
++        };
++        // Even a successfully sent reply might not have reached the client.
++        // Pure mount probes/read-only transports can close normally; after any
++        // dispatched mutation the lifecycle owner must decide whether the volume
++        // was unmounted, rather than silently accepting a new backend session.
++        if peer.mutated && !self.stopped.load(Ordering::Acquire) {
++            drop(state);
++            self.stop(Some(error.unwrap_or_else(|| {
++                "MTP NFS connection closed after a mutation".into()
++            })));
++            return Ok(());
++        }
++        if let Some(peer) = state.peers.remove(&id) {
++            let _ = peer.client.shutdown(Shutdown::Both);
++            if let Some(server) = peer.server {
++                let _ = server.shutdown(Shutdown::Both);
++            }
++        }
++        state.pending.retain(|key, _| key.0 != id);
++        state.bytes = state
++            .pending
++            .values()
++            .map(|request| request.body.len())
++            .sum();
++        state.inflight.retain(|key| key.0 != id);
++        state.reads.retain(|key| key.0 != id);
++        state.mutations.retain(|key| key.0 != id);
++        self.ready.notify_all();
++        Ok(())
++    }
++    fn admit(&self, request: Request) -> anyhow::Result<()> {
++        let mut state = self.lock()?;
++        if let Some(old) = state.pending.get(&request.key) {
++            ensure!(
++                old.body == request.body,
++                "Pending RPC XID reused with different contents"
++            );
++            return Ok(());
++        }
++        while !self.stopped.load(Ordering::Acquire)
++            && (state.bytes + request.body.len() > BYTE_LIMIT
++                || state.pending.len() >= REQUEST_LIMIT)
++        {
++            state = self
++                .ready
++                .wait(state)
++                .map_err(|_| anyhow!("MTP NFS scheduler panicked"))?;
++        }
++        if self.stopped.load(Ordering::Acquire) || !state.peers.contains_key(&request.key.0) {
++            return Ok(());
++        }
++        if read_only(request.proc) {
++            state.reads.push_back(request.key);
++        } else {
++            state.mutations.push_back(request.key);
++        }
++        state.bytes += request.body.len();
++        state.pending.insert(request.key, Arc::new(request));
++        self.ready.notify_all();
++        Ok(())
++    }
++    fn next_mutation(state: &State) -> Option<usize> {
++        let (mut busy_write, mut busy_other) = (BTreeSet::new(), BTreeSet::new());
++        let mut writes = 0;
++        for key in &state.inflight {
++            let request = &state.pending[key];
++            if request.proc == 7 {
++                writes += 1;
++                busy_write.extend(request.handles.iter().cloned());
++            } else {
++                busy_other.extend(request.handles.iter().cloned());
++            }
++        }
++        for (index, key) in state.mutations.iter().enumerate() {
++            let request = &state.pending[key];
++            let blocked = !request.handles.is_disjoint(&busy_other)
++                || (request.proc != 7 && !request.handles.is_disjoint(&busy_write));
++            if !blocked && (request.proc != 7 || writes < WRITE_WINDOW) {
++                return Some(index);
++            }
++            // Preserve explicit same-handle barriers across queued mutations.
++            // This is not an alias map for rename/replacement targets.
++            if request.proc == 7 {
++                busy_write.extend(request.handles.iter().cloned());
++            } else {
++                busy_other.extend(request.handles.iter().cloned());
++            }
++        }
++        None
++    }
++    fn dispatch(&self) -> anyhow::Result<()> {
++        loop {
++            let mut state = self.lock()?;
++            let key = loop {
++                if self.stopped.load(Ordering::Acquire) {
++                    return Ok(());
++                }
++                if state.inflight.len() < TOTAL_WINDOW {
++                    let mutation = Self::next_mutation(&state);
++                    if !state.reads.is_empty()
++                        && (mutation.is_none() || state.read_streak < READ_BURST)
++                    {
++                        state.read_streak = (state.read_streak + 1).min(READ_BURST);
++                        if let Some(key) = state.reads.pop_front() {
++                            break key;
++                        }
++                    } else if let Some(index) = mutation {
++                        state.read_streak = 0;
++                        if let Some(key) = state.mutations.remove(index) {
++                            break key;
++                        }
++                    }
++                }
++                state = self
++                    .ready
++                    .wait(state)
++                    .map_err(|_| anyhow!("MTP NFS scheduler panicked"))?;
++            };
++            let request = Arc::clone(&state.pending[&key]);
++            state.inflight.insert(key);
++            if !read_only(request.proc) {
++                state
++                    .peers
++                    .get_mut(&key.0)
++                    .context("Missing RPC peer")?
++                    .mutated = true;
++            }
++            drop(state);
++            if let Err(error) = send(&request.server, &request.body) {
++                self.close_peer(key.0, Some(format!("{error:#}")))?;
++            }
++        }
++    }
++}
++
++pub(crate) struct Relay {
++    pub port: u16,
++    shared: Arc<Shared>,
++    owner: Mutex<Option<JoinHandle<()>>>,
++}
++impl Relay {
++    pub fn start(upstream: SocketAddr) -> anyhow::Result<Self> {
++        let listener =
++            TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).context("Bind MTP NFS scheduler")?;
++        let port = listener
++            .local_addr()
++            .context("Read MTP NFS scheduler port")?
++            .port();
++        listener
++            .set_nonblocking(true)
++            .context("Configure MTP NFS listener")?;
++        let shared = Arc::new(Shared {
++            state: Mutex::new(State::default()),
++            ready: Condvar::new(),
++            stopped: AtomicBool::new(false),
++        });
++        let worker = Arc::clone(&shared);
++        let owner = thread::spawn(move || {
++            let sender = Arc::clone(&worker);
++            let dispatcher = thread::spawn(move || {
++                if let Err(e) = sender.dispatch() {
++                    sender.stop(Some(format!("{e:#}")));
++                }
++            });
++            if let Err(e) = listen(listener, upstream, &worker) {
++                worker.stop(Some(format!("{e:#}")));
++            }
++            worker.stop(None);
++            if dispatcher.join().is_err() {
++                worker.stop(Some("MTP NFS dispatcher panicked".into()));
++            }
++            if let Ok(mut state) = worker.lock() {
++                state.peers.clear();
++                state.pending.clear();
++                state.inflight.clear();
++                state.reads.clear();
++                state.mutations.clear();
++                state.bytes = 0;
++            }
++        });
++        Ok(Self {
++            port,
++            shared,
++            owner: Mutex::new(Some(owner)),
++        })
++    }
++    pub fn failure(&self) -> anyhow::Result<Option<String>> {
++        Ok(self.shared.lock()?.failure.clone())
++    }
++    pub fn stop(&self) {
++        self.shared.stop(None);
++        if let Ok(mut owner) = self.owner.lock() {
++            if let Some(thread) = owner.take() {
++                let _ = thread.join();
++            }
++        }
++    }
++}
++fn listen(listener: TcpListener, upstream: SocketAddr, shared: &Arc<Shared>) -> anyhow::Result<()> {
++    let mut workers: Vec<JoinHandle<()>> = Vec::new();
++    let mut cleanup = common_utils::Deferred::new();
++    // Join is below the listener loop so all socket shutdowns precede it.
++    cleanup.add(|| shared.stop(None));
++    let mut next_id = 0;
++    let result = (|| -> anyhow::Result<()> {
++        while !shared.stopped.load(Ordering::Acquire) {
++            let mut index = 0;
++            while index < workers.len() {
++                if workers[index].is_finished() {
++                    workers
++                        .swap_remove(index)
++                        .join()
++                        .map_err(|_| anyhow!("MTP NFS peer panicked"))?;
++                } else {
++                    index += 1;
++                }
++            }
++            match listener.accept() {
++                Ok((stream, _)) => {
++                    if workers.len() >= CONNECTION_LIMIT {
++                        continue;
++                    }
++                    // BSD accept inherits the listener's nonblocking flag.
++                    // Framing workers use blocking reads, woken by shutdown.
++                    stream
++                        .set_nonblocking(false)
++                        .context("Configure MTP RPC stream")?;
++                    let client = Arc::new(stream);
++                    let id = next_id;
++                    next_id += 1;
++                    shared.lock()?.peers.insert(
++                        id,
++                        Peer {
++                            client: Arc::clone(&client),
++                            server: None,
++                            mutated: false,
++                        },
++                    );
++                    let state = Arc::clone(shared);
++                    workers.push(thread::spawn(move || {
++                        let result = connection(id, &client, upstream, &state);
++                        if let Err(e) = state.close_peer(id, result.err().map(|e| format!("{e:#}")))
++                        {
++                            state.stop(Some(format!("{e:#}")));
++                        }
++                    }));
++                }
++                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
++                    thread::sleep(Duration::from_millis(20))
++                }
++                Err(e) => return Err(e).context("Accept MTP NFS connection"),
++            }
++        }
++        Ok(())
++    })();
++    drop(cleanup);
++    for thread in workers {
++        if thread.join().is_err() {
++            shared.stop(Some("MTP NFS peer panicked".into()));
++        }
++    }
++    result
++}
++fn connection(
++    id: u64,
++    client: &Arc<TcpStream>,
++    upstream: SocketAddr,
++    shared: &Arc<Shared>,
++) -> anyhow::Result<()> {
++    let Some(first) = record(client)? else {
++        return Ok(());
++    };
++    let program = u32_at(&first, 12)?;
++    ensure!(
++        matches!(program, 100003 | 100005),
++        "Expected NFS or mountd RPC"
++    );
++    let port = if program == 100003 { 2049 } else { 32767 };
++    let mut backend = upstream;
++    backend.set_port(port);
++    let server = Arc::new(
++        TcpStream::connect_timeout(&backend, Duration::from_secs(5))
++            .context("Connect MTP RPC backend")?,
++    );
++    server
++        .set_nodelay(true)
++        .context("Configure MTP RPC backend")?;
++    client
++        .set_nodelay(true)
++        .context("Configure MTP RPC client")?;
++    {
++        let mut state = shared.lock()?;
++        if shared.stopped.load(Ordering::Acquire) {
++            return Ok(());
++        }
++        state.peers.get_mut(&id).context("Missing RPC peer")?.server = Some(Arc::clone(&server));
++    }
++    if program == 100005 {
++        let mut body = first;
++        loop {
++            ensure!(
++                u32_at(&body, 12)? == 100005,
++                "RPC program changed on mountd connection"
++            );
++            send(&server, &body)?;
++            let reply = record(&server)?.context("Mountd disconnected before reply")?;
++            send(client, &reply)?;
++            match record(client)? {
++                Some(next) => body = next,
++                None => return Ok(()),
++            }
++        }
++    }
++    let receiver = Arc::clone(shared);
++    let reply_client = Arc::clone(client);
++    let reply_server = Arc::clone(&server);
++    let replies = thread::spawn(move || {
++        let result = forward_replies(id, &reply_client, &reply_server, &receiver);
++        if let Err(e) = receiver.close_peer(id, result.err().map(|e| format!("{e:#}"))) {
++            receiver.stop(Some(format!("{e:#}")));
++        }
++    });
++    let result = (|| -> anyhow::Result<()> {
++        let mut body = first;
++        loop {
++            ensure!(
++                (
++                    u32_at(&body, 4)?,
++                    u32_at(&body, 8)?,
++                    u32_at(&body, 12)?,
++                    u32_at(&body, 16)?
++                ) == (0, 2, 100003, 3),
++                "Expected NFSv3 RPC"
++            );
++            let proc = u32_at(&body, 20)?;
++            ensure!(proc <= 21, "Unknown NFSv3 procedure");
++            shared.admit(Request {
++                key: (id, u32_at(&body, 0)?),
++                proc,
++                handles: handles(&body, proc)?,
++                body,
++                server: Arc::clone(&server),
++            })?;
++            match record(client)? {
++                Some(next) => body = next,
++                None => return Ok(()),
++            }
++        }
++    })();
++    let close = shared.close_peer(id, result.as_ref().err().map(|e| format!("{e:#}")));
++    replies
++        .join()
++        .map_err(|_| anyhow!("MTP NFS reply worker panicked"))?;
++    close?;
++    result
++}
++fn forward_replies(
++    id: u64,
++    client: &TcpStream,
++    server: &TcpStream,
++    shared: &Shared,
++) -> anyhow::Result<()> {
++    while let Some(body) = record(server)? {
++        ensure!(u32_at(&body, 4)? == 1, "Expected RPC reply");
++        let key = (id, u32_at(&body, 0)?);
++        {
++            let state = shared.lock()?;
++            if shared.stopped.load(Ordering::Acquire) {
++                return Ok(());
++            }
++            ensure!(state.inflight.contains(&key), "Unexpected NFS reply XID");
++        }
++        send(client, &body)?;
++        let mut state = shared.lock()?;
++        if let Some(request) = state.pending.remove(&key) {
++            state.bytes -= request.body.len();
++        }
++        state.inflight.remove(&key);
++        shared.ready.notify_all();
++    }
++    Ok(())
++}
+diff --git a/mtpfs/.gitignore b/mtpfs/.gitignore
+new file mode 100644
+index 0000000..ea113d8
+--- /dev/null
++++ b/mtpfs/.gitignore
+@@ -0,0 +1,3 @@
++*.o
++*.d
++/mtpfs
+diff --git a/mtpfs/Makefile b/mtpfs/Makefile
+new file mode 100644
+index 0000000..3824345
+--- /dev/null
++++ b/mtpfs/Makefile
+@@ -0,0 +1,17 @@
++CXX = /usr/bin/g++
++CXXFLAGS ?= -O2 -g
++CPPFLAGS += -D_FILE_OFFSET_BITS=64 $(FUSE_CFLAGS) $(MTP_CFLAGS)
++CXXFLAGS += -std=c++20 -Wall -Wextra -Wpedantic -pthread
++LDLIBS += $(FUSE_LIBS) $(MTP_LIBS) -lcrypto -pthread
++SOURCES := $(wildcard src/*.cpp)
++OBJECTS := $(SOURCES:.cpp=.o)
++
++all: mtpfs
++mtpfs: $(OBJECTS)
++	$(CXX) $(CXXFLAGS) $(OBJECTS) $(LDLIBS) -o $@
++src/%.o: src/%.cpp
++	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -MMD -MP -c $< -o $@
++-include $(OBJECTS:.o=.d)
++clean:
++	rm -f $(OBJECTS) $(OBJECTS:.o=.d) mtpfs
++.PHONY: all clean
+diff --git a/mtpfs/src/catalogue.cpp b/mtpfs/src/catalogue.cpp
+new file mode 100644
+index 0000000..86196d7
+--- /dev/null
++++ b/mtpfs/src/catalogue.cpp
+@@ -0,0 +1,611 @@
++#include "catalogue.hpp"
++#include <algorithm>
++#include <fcntl.h>
++#include <unistd.h>
++
++namespace mtpfs {
++namespace {
++bool private_name(const std::string &name) {
++  // Apple metadata is a mount-local sidecar. NFS silly-renames are real phone
++  // objects: treating .nfs names as sidecars would change an open file's
++  // backend.
++  return name.rfind("._", 0) == 0 || name == ".DS_Store";
++}
++void valid_name(const std::string &name) {
++  if (name.empty() || name == "." || name == ".." ||
++      name.find('/') != std::string::npos || name.size() > 255)
++    fail(EINVAL, "Invalid MTP filename");
++}
++} // namespace
++Catalogue::Catalogue(Transport &transport, std::filesystem::path root,
++                     bool writable)
++    : transport_(transport), root_(std::move(root)), writable_(writable) {
++  // A fresh session never opens an old writeback database or replays its work.
++  // The host allocates a new directory and preserves prior caches separately.
++  std::filesystem::create_directory(root_ / "read-cache");
++  auto root_entry = std::make_shared<Entry>();
++  root_entry->node.id = next_++;
++  root_entry->node.directory = root_entry->node.loaded = true;
++  root_entry->node.mode = 0755;
++  entries_.emplace(root_entry->node.id, root_entry);
++  for (auto &storage : transport.storages()) {
++    auto e = std::make_shared<Entry>();
++    e->node.id = next_++;
++    e->node.parent = 1;
++    e->node.name = storage.name + " (" + std::to_string(storage.id) + ")";
++    e->node.storage = storage.id;
++    e->node.directory = true;
++    e->node.mode = 0755;
++    e->node.accessed = e->node.modified = e->node.changed = now();
++    entries_.emplace(e->node.id, e);
++    names_.emplace(std::make_pair(1, e->node.name), e->node.id);
++  }
++  atomic_file(root_ / "session.pending", "direct MTP session\n");
++  status("mounted");
++}
++std::shared_ptr<Catalogue::Entry> Catalogue::entry(NodeId id) {
++  std::lock_guard lock(metadata_);
++  return entries_.at(id);
++}
++Node Catalogue::node(NodeId id) {
++  std::lock_guard lock(metadata_);
++  return entries_.at(id)->node;
++}
++void Catalogue::require_session() {
++  if (failed_ || transport_.failed())
++    fail(EIO, "MTP session failed; unmount before reconnecting");
++}
++void Catalogue::require_write() {
++  if (!writable_)
++    fail(EROFS, "Read-only MTP mount");
++  require_session();
++}
++void Catalogue::load_locked(NodeId id) {
++  auto e = entry(id);
++  auto n = node(id);
++  if (!n.directory)
++    fail(ENOTDIR, "Not an MTP directory");
++  if (n.deleted)
++    fail(ENOENT, "Removed MTP directory");
++  if (n.loaded)
++    return;
++  require_session();
++  auto listing =
++      n.local ? std::vector<RemoteEntry>()
++              : transport_.list(n.storage, e->object, Priority::foreground);
++  std::map<std::string, std::shared_ptr<Entry>> added;
++  for (auto &remote : listing) {
++    if (added.count(remote.name))
++      fail(EIO, "Phone returned duplicate directory names");
++    auto child = std::make_shared<Entry>();
++    child->node.id = next_++;
++    child->node.parent = id;
++    child->node.name = remote.name;
++    child->node.storage = n.storage;
++    child->node.directory = remote.directory;
++    child->node.mode = remote.directory ? 0755 : 0644;
++    child->node.size = remote.size;
++    child->node.accessed = child->node.modified = child->node.changed =
++        remote.modified;
++    child->object = remote.id;
++    added.emplace(remote.name, child);
++  }
++  std::lock_guard lock(metadata_);
++  for (auto &[name, child] : added) {
++    names_.emplace(std::make_pair(id, name), child->node.id);
++    entries_.emplace(child->node.id, child);
++  }
++  e->node.loaded = true;
++}
++void Catalogue::load(NodeId id) {
++  // Cached metadata must remain available while an unrelated upload waits.
++  if (node(id).loaded)
++    return;
++  std::lock_guard lock(namespace_);
++  load_locked(id);
++}
++std::vector<Node> Catalogue::children(NodeId id) {
++  load(id);
++  std::lock_guard lock(metadata_);
++  std::vector<Node> result;
++  for (auto &[key, child] : names_)
++    if (key.first == id)
++      result.push_back(entries_.at(child)->node);
++  return result;
++}
++NodeId Catalogue::lookup(const std::string &path) {
++  NodeId id = 1;
++  for (size_t start = 1; start < path.size();) {
++    auto end = path.find('/', start);
++    if (end == std::string::npos)
++      end = path.size();
++    load(id);
++    std::lock_guard lock(metadata_);
++    auto found = names_.find({id, path.substr(start, end - start)});
++    if (found == names_.end())
++      fail(ENOENT, "MTP path not found");
++    id = found->second;
++    start = end + 1;
++  }
++  return id;
++}
++std::string Catalogue::path_locked(NodeId id) {
++  // Caller owns namespace_; names cannot change during this walk.
++  std::string result;
++  for (; id > 1;) {
++    auto n = node(id);
++    result = "/" + n.name + result;
++    id = n.parent;
++  }
++  return result;
++}
++void Catalogue::status(const std::string &state, const std::string &error) {
++  std::lock_guard lock(status_);
++  atomic_file(root_ / "status.json", "{\"state\":" + json_quote(state) +
++                                         ",\"error\":" + json_quote(error) +
++                                         "}\n");
++}
++void Catalogue::namespace_failed(const std::exception &error) {
++  failed_ = true;
++  // Preserve the original I/O failure if writing its diagnostic also fails.
++  try {
++    status("failed", error.what());
++  } catch (const std::exception &e) {
++    fprintf(stderr, "mtpfs status: %s\n", e.what());
++  }
++}
++void Catalogue::data_failed(Entry &e) {
++  e.failure = std::current_exception();
++  try {
++    std::rethrow_exception(e.failure);
++  } catch (const std::exception &error) {
++    namespace_failed(error);
++  }
++}
++void Catalogue::clear_record(const std::filesystem::path &path) {
++  std::filesystem::remove(path);
++  sync_directory(root_);
++}
++void Catalogue::retain(Entry &e) {
++  auto n = node(e.node.id);
++  auto name = "ALFS-retained-" + unique_id();
++  std::string destination = path_locked(n.parent);
++  uint32_t parent = entry(n.parent)->object;
++  if (transport_.can_move()) {
++    auto found = retained_.find(n.storage);
++    if (found == retained_.end()) {
++      auto directory = "ALFS-open-" + unique_id();
++      atomic_file(root_ / ("retained-" + std::to_string(n.storage) + ".json"),
++                  "{\"storage\":" + std::to_string(n.storage) +
++                      ",\"directory\":" + json_quote(directory) + "}\n");
++      auto object = transport_.create(n.storage, 0, directory, true);
++      found = retained_.emplace(n.storage, RetainedDirectory{object, directory})
++                  .first;
++    }
++    parent = found->second.object;
++    destination = found->second.name;
++  }
++  atomic_file(root_ / ("orphan-" + std::to_string(n.id) + ".json"),
++              "{\"parent\":" + json_quote(path_locked(n.parent)) +
++                  ",\"original\":" + json_quote(n.name) +
++                  ",\"retained_parent\":" + json_quote(destination) +
++                  ",\"retained\":" + json_quote(name) + "}\n");
++  transport_.rename(e.object, name);
++  // Open-but-unlinked data must not keep its former user directory nonempty.
++  // Keep it in a session-owned storage-root directory when native moves exist.
++  if (transport_.can_move())
++    transport_.move(e.object, n.storage, parent);
++}
++void Catalogue::cache(Entry &e) {
++  if (e.cache.get() < 0)
++    e.cache = open_file(root_ / "read-cache" / std::to_string(e.node.id),
++                        O_CREAT | O_RDWR);
++}
++void Catalogue::begin(Entry &e) {
++  if (!e.node.local && !e.editing) {
++    transport_.begin(e.object);
++    e.editing = true;
++  }
++}
++void Catalogue::end(Entry &e) {
++  if (e.failure)
++    std::rethrow_exception(e.failure);
++  if (e.editing) {
++    transport_.end(e.object);
++    e.editing = false;
++  }
++}
++void Catalogue::discard(Entry &e) {
++  end(e);
++  if (!e.node.local && e.object) {
++    transport_.remove(e.object);
++    e.object = 0;
++  }
++  e.cache = Fd();
++  e.cached.clear();
++  std::filesystem::remove(root_ / "read-cache" / std::to_string(e.node.id));
++  clear_record(root_ / ("orphan-" + std::to_string(e.node.id) + ".json"));
++}
++NodeId Catalogue::create(NodeId parent, const std::string &name,
++                         bool directory) {
++  require_write();
++  valid_name(name);
++  std::lock_guard namespace_lock(namespace_);
++  require_write();
++  load_locked(parent);
++  auto p = entry(parent);
++  if (parent == 1)
++    fail(EPERM, "Cannot create a phone storage");
++  {
++    std::lock_guard lock(metadata_);
++    if (names_.count({parent, name}))
++      fail(EEXIST, "MTP name already exists");
++  }
++  auto e = std::make_shared<Entry>();
++  e->node.id = next_++;
++  e->node.parent = parent;
++  e->node.storage = p->node.storage;
++  e->node.name = name;
++  e->node.directory = directory;
++  e->node.mode = directory ? 0755 : 0644;
++  e->node.loaded = directory;
++  e->node.local = p->node.local || private_name(name);
++  if (!e->node.local)
++    e->object = transport_.create(e->node.storage, p->object, name, directory);
++  e->node.accessed = e->node.modified = e->node.changed = now();
++  std::lock_guard lock(metadata_);
++  names_.emplace(std::make_pair(parent, name), e->node.id);
++  entries_.emplace(e->node.id, e);
++  p->node.modified = p->node.changed = now();
++  return e->node.id;
++}
++void Catalogue::rename(NodeId id, NodeId parent, const std::string &name) {
++  require_write();
++  valid_name(name);
++  std::lock_guard namespace_lock(namespace_);
++  require_write();
++  load_locked(parent);
++  auto source = entry(id), destination = entry(parent);
++  auto n = node(id), p = node(parent);
++  if (n.deleted)
++    fail(ENOENT, "Removed MTP path");
++  if (n.parent == parent && n.name == name)
++    return;
++  if (n.parent == 1 || parent == 1)
++    fail(EPERM, "Cannot rename phone storage");
++  if (n.storage != p.storage)
++    fail(EXDEV, "Cross-storage rename");
++  if (n.local != (p.local || private_name(name)))
++    fail(EOPNOTSUPP, "Cannot move between phone objects and local sidecars");
++  if (!n.local && n.parent != parent && !transport_.can_move())
++    fail(EOPNOTSUPP, "Phone does not support native object moves");
++  for (auto ancestor = parent; ancestor > 1; ancestor = node(ancestor).parent)
++    if (ancestor == id)
++      fail(EINVAL, "Directory cycle");
++  std::shared_ptr<Entry> target;
++  {
++    std::lock_guard lock(metadata_);
++    auto found = names_.find({parent, name});
++    if (found != names_.end())
++      target = entries_.at(found->second);
++  }
++  if (target) {
++    auto t = node(target->node.id);
++    if (t.directory != n.directory)
++      fail(t.directory ? EISDIR : ENOTDIR, "Rename type mismatch");
++    if (t.directory) {
++      load_locked(t.id);
++      std::lock_guard lock(metadata_);
++      for (auto &[key, child] : names_)
++        if (key.first == t.id)
++          fail(ENOTEMPTY, "Rename target is not empty");
++    }
++  }
++  std::unique_lock source_lock(source->io);
++  std::unique_lock<std::mutex> target_lock;
++  if (target)
++    target_lock = std::unique_lock(target->io);
++  // MTP has no atomic replacement primitive. Preserve the destination object
++  // and its open handles, then publish the new namespace only after success.
++  // On an uncertain partial transaction, leave evidence and fail this session;
++  // never attempt an inverse operation over an already broken protocol stream.
++  auto transaction = root_ / "namespace.pending";
++  atomic_file(transaction, "{\"source\":" + json_quote(path_locked(id)) +
++                               ",\"destination\":" +
++                               json_quote(path_locked(parent) + "/" + name) +
++                               "}\n");
++  try {
++    end(*source);
++    if (target) {
++      end(*target);
++      if (!target->node.local) {
++        retain(*target);
++      }
++    }
++    if (!n.local) {
++      // For cross-directory moves use a unique temporary name so an unrelated
++      // same-named file in the destination is never replaced accidentally.
++      if (n.parent != parent) {
++        auto moving = "ALFS-moving-" + unique_id();
++        atomic_file(transaction,
++                    "{\"source\":" + json_quote(path_locked(id)) +
++                        ",\"destination\":" +
++                        json_quote(path_locked(parent) + "/" + name) +
++                        ",\"temporary\":" + json_quote(moving) + "}\n");
++        transport_.rename(source->object, moving);
++        transport_.move(source->object, n.storage, destination->object);
++      }
++      transport_.rename(source->object, name);
++    }
++    {
++      std::lock_guard lock(metadata_);
++      if (target) {
++        target->node.deleted = true;
++        target->node.changed = now();
++      }
++      names_.erase({n.parent, n.name});
++      names_[{parent, name}] = id;
++      source->node.parent = parent;
++      source->node.name = name;
++      source->node.changed = now();
++      entries_.at(n.parent)->node.modified =
++          entries_.at(n.parent)->node.changed = now();
++      destination->node.modified = destination->node.changed = now();
++    }
++    if (target && !target->handles)
++      discard(*target);
++    clear_record(transaction);
++  } catch (const std::exception &error) {
++    namespace_failed(error);
++    throw;
++  }
++}
++void Catalogue::remove(NodeId id, bool directory) {
++  require_write();
++  std::lock_guard namespace_lock(namespace_);
++  require_write();
++  auto e = entry(id);
++  auto n = node(id);
++  if (n.deleted)
++    fail(ENOENT, "Removed MTP path");
++  if (id == 1 || n.parent == 1)
++    fail(EPERM, "Cannot remove phone storage");
++  if (n.directory != directory)
++    fail(n.directory ? EISDIR : ENOTDIR, "Remove type mismatch");
++  if (directory) {
++    load_locked(id);
++    std::lock_guard lock(metadata_);
++    for (auto &[key, child] : names_)
++      if (key.first == id)
++        fail(ENOTEMPTY, "MTP directory is not empty");
++    if (!transport_.can_move())
++      for (auto &[child, value] : entries_)
++        if (value->node.parent == id && value->node.deleted && value->object)
++          fail(ENOTEMPTY,
++               "Phone cannot move open unlinked files out of this directory");
++  }
++  std::lock_guard io(e->io);
++  try {
++    end(*e);
++    if (e->handles) {
++      if (!n.local) {
++        retain(*e);
++      }
++    } else {
++      discard(*e);
++    }
++    std::lock_guard lock(metadata_);
++    names_.erase({n.parent, n.name});
++    e->node.deleted = true;
++    e->node.changed = now();
++    entries_.at(n.parent)->node.modified = entries_.at(n.parent)->node.changed =
++        now();
++  } catch (const std::exception &error) {
++    namespace_failed(error);
++    throw;
++  }
++}
++void Catalogue::open(NodeId id) {
++  require_session();
++  auto e = entry(id);
++  std::lock_guard io(e->io);
++  if (node(id).deleted)
++    fail(ENOENT, "Removed MTP file");
++  ++e->handles;
++}
++void Catalogue::close(NodeId id) {
++  auto e = entry(id);
++  std::lock_guard namespace_lock(namespace_);
++  std::lock_guard io(e->io);
++  --e->handles;
++  if (!e->handles && node(id).deleted) {
++    try {
++      require_session();
++      discard(*e);
++    } catch (const std::exception &error) {
++      namespace_failed(error);
++      throw;
++    }
++  } else if (!e->handles) {
++    // Page validity belongs to this session, not to an open descriptor. Keep
++    // the sparse cache reusable without retaining one fd for every visited
++    // file.
++    e->cache = Fd();
++  }
++}
++void Catalogue::invalidate(Entry &e, uint64_t offset, uint64_t size) {
++  if (!size)
++    return;
++  auto first = e.cached.lower_bound(offset / cache_block_size);
++  auto last = e.cached.upper_bound((offset + size - 1) / cache_block_size);
++  e.cached.erase(first, last);
++}
++std::vector<char> Catalogue::read(NodeId id, uint64_t offset, size_t size) {
++  require_session();
++  auto e = entry(id);
++  std::lock_guard io(e->io);
++  auto n = node(id);
++  if (offset >= n.size || !size)
++    return {};
++  size = std::min<uint64_t>(size, n.size - offset);
++  cache(*e);
++  if (n.local)
++    return read_at(e->cache.get(), size, offset);
++  for (auto pos = offset; pos < offset + size;) {
++    auto block = pos / cache_block_size;
++    if (e->cached.count(block)) {
++      pos = std::min<uint64_t>((block + 1) * cache_block_size, offset + size);
++      continue;
++    }
++    auto start = block * cache_block_size;
++    auto count = std::min<uint64_t>(transfer_block_size, n.size - start);
++    std::vector<char> bytes;
++    while (bytes.size() < count) {
++      auto part = transport_.read(e->object, start + bytes.size(),
++                                  count - bytes.size(), Priority::foreground);
++      if (part.empty())
++        fail(EIO, "Short MTP read before EOF");
++      bytes.insert(bytes.end(), part.begin(), part.end());
++    }
++    write_all(e->cache.get(), bytes.data(), bytes.size(), start);
++    for (auto b = block; b * cache_block_size < start + count; ++b)
++      e->cached.insert(b);
++    pos = std::min<uint64_t>(start + count, offset + size);
++  }
++  auto bytes = read_at(e->cache.get(), size, offset);
++  if (bytes.size() != size)
++    fail(EIO, "Incomplete MTP read cache");
++  return bytes;
++}
++void Catalogue::write(NodeId id, uint64_t offset, const char *bytes,
++                      size_t size) {
++  require_write();
++  auto e = entry(id);
++  std::lock_guard io(e->io);
++  require_write();
++  if (e->failure)
++    std::rethrow_exception(e->failure);
++  if (!size)
++    return;
++  auto n = node(id);
++  try {
++    begin(*e);
++    // NFS can submit later ranges first. Android partial-write rejects a gap;
++    // extend the remote object before sending bytes beyond its current EOF.
++    if (!n.local && offset > n.size)
++      transport_.resize(e->object, offset);
++    if (!n.local)
++      for (size_t done = 0; done < size;) {
++        auto count = std::min<uint64_t>(transfer_block_size, size - done);
++        transport_.write(e->object, offset + done,
++                         std::vector<char>(bytes + done, bytes + done + count));
++        done += count;
++      }
++    cache(*e);
++    invalidate(*e, offset, size);
++    if (offset + size > n.size && n.size % cache_block_size)
++      e->cached.erase(n.size / cache_block_size);
++    write_all(e->cache.get(), bytes, size, offset);
++    // Only complete pages can replace a cached remote read without fetching
++    // untouched bytes. This is a read cache, never an upload queue.
++    for (auto b = (offset + cache_block_size - 1) / cache_block_size;
++         (b + 1) * cache_block_size <= offset + size; ++b)
++      e->cached.insert(b);
++    std::lock_guard lock(metadata_);
++    e->node.size = std::max<uint64_t>(n.size, offset + size);
++    e->node.modified = e->node.changed = now();
++  } catch (...) {
++    data_failed(*e);
++    throw;
++  }
++}
++void Catalogue::truncate(NodeId id, uint64_t size) {
++  require_write();
++  auto e = entry(id);
++  std::lock_guard io(e->io);
++  require_write();
++  auto n = node(id);
++  try {
++    begin(*e);
++    if (!n.local)
++      transport_.resize(e->object, size);
++    cache(*e);
++    check(ftruncate(e->cache.get(), size) == 0, "Resize MTP read cache");
++    auto changed = std::min(n.size, size);
++    e->cached.erase(e->cached.lower_bound(changed / cache_block_size),
++                    e->cached.end());
++    std::lock_guard lock(metadata_);
++    e->node.size = size;
++    e->node.modified = e->node.changed = now();
++  } catch (...) {
++    data_failed(*e);
++    throw;
++  }
++}
++void Catalogue::sync(NodeId id) {
++  require_session();
++  auto e = entry(id);
++  std::lock_guard io(e->io);
++  try {
++    require_session();
++    end(*e);
++    if (e->node.local && e->cache.get() >= 0)
++      sync_file(e->cache.get());
++  } catch (...) {
++    data_failed(*e);
++    throw;
++  }
++}
++void Catalogue::touch(NodeId id, const timespec times[2]) {
++  require_write();
++  auto e = entry(id);
++  std::lock_guard io(e->io);
++  if (times[1].tv_nsec != UTIME_OMIT) {
++    auto modified = times[1].tv_nsec == UTIME_NOW
++                        ? now()
++                        : times[1].tv_sec + times[1].tv_nsec / 1e9;
++    // Android may reject DateModified (observed response A80A). Like Unix
++    // modes and access times, timestamps describe this mounted view; remount
++    // reloads the phone's metadata. No unsupported property command is sent.
++    std::lock_guard lock(metadata_);
++    e->node.modified = modified;
++    e->node.changed = now();
++  }
++  // MTP has no access-time property; expose it for the lifetime of this mount.
++  if (times[0].tv_nsec != UTIME_OMIT) {
++    std::lock_guard lock(metadata_);
++    e->node.accessed = times[0].tv_nsec == UTIME_NOW
++                           ? now()
++                           : times[0].tv_sec + times[0].tv_nsec / 1e9;
++  }
++}
++void Catalogue::chmod(NodeId id, mode_t mode) {
++  require_write();
++  std::lock_guard lock(metadata_);
++  // Unix permissions are a mount-local view; MTP does not provide Unix modes.
++  entries_.at(id)->node.mode = mode & 0777;
++  entries_.at(id)->node.changed = now();
++}
++void Catalogue::finish() {
++  require_session();
++  std::lock_guard namespace_lock(namespace_);
++  for (auto &[id, e] : entries_) {
++    std::lock_guard io(e->io);
++    try {
++      if (e->node.deleted)
++        discard(*e);
++      else
++        end(*e);
++    } catch (const std::exception &error) {
++      namespace_failed(error);
++      throw;
++    }
++  }
++  for (auto &[storage, directory] : retained_) {
++    transport_.remove(directory.object);
++    clear_record(root_ / ("retained-" + std::to_string(storage) + ".json"));
++  }
++  status("complete");
++  clear_record(root_ / "session.pending");
++}
++} // namespace mtpfs
+diff --git a/mtpfs/src/catalogue.hpp b/mtpfs/src/catalogue.hpp
+new file mode 100644
+index 0000000..b6ee66c
+--- /dev/null
++++ b/mtpfs/src/catalogue.hpp
+@@ -0,0 +1,83 @@
++#pragma once
++#include "transport.hpp"
++#include <map>
++#include <memory>
++#include <set>
++#include <sys/stat.h>
++
++namespace mtpfs {
++struct Node {
++  NodeId id = 0, parent = 0;
++  std::string name;
++  uint32_t storage = 0;
++  bool directory = false, deleted = false, local = false, loaded = false;
++  uint64_t size = 0;
++  double accessed = 0, modified = 0, changed = 0;
++  mode_t mode = 0644;
++};
++
++// Namespace and attributes are session-local. Object IDs never survive a mount.
++// namespace_ serializes name changes; metadata_ protects quick cached lookups
++// and is never held across USB I/O. Each entry's io mutex serializes its data,
++// editing session and open handles. Lock order: namespace_, entry io,
++// metadata_.
++class Catalogue {
++  struct Entry {
++    Node node;
++    std::mutex io;
++    uint32_t object = 0;
++    unsigned handles = 0;
++    bool editing = false;
++    Fd cache;
++    std::set<uint64_t> cached;
++    std::exception_ptr failure;
++  };
++  Transport &transport_;
++  std::filesystem::path root_;
++  bool writable_;
++  std::atomic<bool> failed_{false};
++  std::mutex namespace_, metadata_, status_;
++  NodeId next_ = 1;
++  std::map<NodeId, std::shared_ptr<Entry>> entries_;
++  std::map<std::pair<NodeId, std::string>, NodeId> names_;
++  struct RetainedDirectory {
++    uint32_t object;
++    std::string name;
++  };
++  std::map<uint32_t, RetainedDirectory> retained_;
++  std::shared_ptr<Entry> entry(NodeId);
++  void require_session();
++  void require_write();
++  void load_locked(NodeId);
++  std::string path_locked(NodeId);
++  void begin(Entry &);
++  void end(Entry &);
++  void cache(Entry &);
++  void discard(Entry &);
++  void invalidate(Entry &, uint64_t offset, uint64_t size);
++  void retain(Entry &);
++  void clear_record(const std::filesystem::path &);
++  void status(const std::string &, const std::string &error = {});
++  void namespace_failed(const std::exception &);
++  void data_failed(Entry &);
++
++public:
++  Catalogue(Transport &, std::filesystem::path, bool writable);
++  Node node(NodeId);
++  std::vector<Node> children(NodeId);
++  void load(NodeId);
++  NodeId lookup(const std::string &);
++  NodeId create(NodeId parent, const std::string &, bool directory);
++  void rename(NodeId, NodeId parent, const std::string &);
++  void remove(NodeId, bool directory);
++  void touch(NodeId, const timespec times[2]);
++  void chmod(NodeId, mode_t);
++  void open(NodeId);
++  void close(NodeId);
++  std::vector<char> read(NodeId, uint64_t, size_t);
++  void write(NodeId, uint64_t, const char *, size_t);
++  void truncate(NodeId, uint64_t);
++  void sync(NodeId);
++  void finish();
++};
++} // namespace mtpfs
+diff --git a/mtpfs/src/main.cpp b/mtpfs/src/main.cpp
+new file mode 100644
+index 0000000..efe2e68
+--- /dev/null
++++ b/mtpfs/src/main.cpp
+@@ -0,0 +1,298 @@
++#define FUSE_USE_VERSION 29
++#include "catalogue.hpp"
++#include <cmath>
++#include <cstring>
++#include <fcntl.h>
++#include <fuse.h>
++#include <iostream>
++#include <sys/file.h>
++#include <sys/statvfs.h>
++#include <unistd.h>
++
++namespace mtpfs {
++struct Filesystem {
++  Catalogue &catalogue;
++  Transport &transport;
++  uid_t uid;
++  gid_t gid;
++  bool writable;
++};
++Filesystem &fs() {
++  return *static_cast<Filesystem *>(fuse_get_context()->private_data);
++}
++template <class F> int guard(F function) {
++  try {
++    return function();
++  } catch (const std::system_error &e) {
++    if (e.code().value() != ENOENT && e.code().value() != ENODATA)
++      std::fprintf(stderr, "mtpfs: %s\n", e.what());
++    return -e.code().value();
++  } catch (const std::exception &e) {
++    std::fprintf(stderr, "mtpfs: %s\n", e.what());
++    return -EIO;
++  }
++}
++NodeId identify(const char *path, fuse_file_info *file = nullptr) {
++  return file && file->fh ? file->fh : fs().catalogue.lookup(path);
++}
++std::pair<NodeId, std::string> split(const char *path) {
++  std::string value(path);
++  auto slash = value.rfind('/');
++  return {fs().catalogue.lookup(slash == 0 ? "/" : value.substr(0, slash)),
++          value.substr(slash + 1)};
++}
++void attributes(NodeId id, struct stat *st) {
++  auto n = fs().catalogue.node(id);
++  std::memset(st, 0, sizeof(*st));
++  st->st_ino = n.id;
++  st->st_mode = (n.directory ? S_IFDIR : S_IFREG) | n.mode;
++  st->st_uid = fs().uid;
++  st->st_gid = fs().gid;
++  // MTP has no Unix link count; 1 avoids claiming a lazy directory is a leaf.
++  st->st_nlink = n.deleted ? 0 : 1;
++  st->st_size = n.size;
++  auto timestamp = [](double value) {
++    auto seconds = static_cast<time_t>(std::floor(value));
++    return timespec{seconds, static_cast<long>((value - seconds) * 1e9)};
++  };
++  st->st_mtim = timestamp(n.modified);
++  st->st_atim = timestamp(n.accessed);
++  st->st_ctim = timestamp(n.changed);
++  st->st_blksize = cache_block_size;
++  st->st_blocks = (n.size + 511) / 512;
++}
++int getattr(const char *path, struct stat *st) {
++  return guard([&] {
++    attributes(identify(path), st);
++    return 0;
++  });
++}
++int fgetattr(const char *path, struct stat *st, fuse_file_info *fi) {
++  return guard([&] {
++    attributes(identify(path, fi), st);
++    return 0;
++  });
++}
++int readdir(const char *path, void *buf, fuse_fill_dir_t fill, off_t,
++            fuse_file_info *fi) {
++  return guard([&] {
++    auto id = identify(path, fi);
++    fill(buf, ".", nullptr, 0);
++    fill(buf, "..", nullptr, 0);
++    for (auto &n : fs().catalogue.children(id)) {
++      struct stat st{};
++      attributes(n.id, &st);
++      if (fill(buf, n.name.c_str(), &st, 0))
++        break;
++    }
++    return 0;
++  });
++}
++int open(const char *path, fuse_file_info *fi) {
++  return guard([&] {
++    if (!fs().writable && (fi->flags & O_ACCMODE) != O_RDONLY)
++      return -EROFS;
++    fi->fh = identify(path);
++    if (fs().catalogue.node(fi->fh).directory)
++      return -EISDIR;
++    fs().catalogue.open(fi->fh);
++    return 0;
++  });
++}
++int opendir(const char *path, fuse_file_info *fi) {
++  return guard([&] {
++    fi->fh = identify(path);
++    fs().catalogue.load(fi->fh);
++    return 0;
++  });
++}
++int create(const char *path, mode_t, fuse_file_info *fi) {
++  return guard([&] {
++    auto [parent, name] = split(path);
++    fi->fh = fs().catalogue.create(parent, name, false);
++    fs().catalogue.open(fi->fh);
++    return 0;
++  });
++}
++int mkdir(const char *path, mode_t) {
++  return guard([&] {
++    auto [parent, name] = split(path);
++    fs().catalogue.create(parent, name, true);
++    return 0;
++  });
++}
++int mknod(const char *path, mode_t mode, dev_t) {
++  return guard([&] {
++    if (!S_ISREG(mode))
++      return -EOPNOTSUPP;
++    auto [parent, name] = split(path);
++    fs().catalogue.create(parent, name, false);
++    return 0;
++  });
++}
++int unlink(const char *path) {
++  return guard([&] {
++    fs().catalogue.remove(identify(path), false);
++    return 0;
++  });
++}
++int rmdir(const char *path) {
++  return guard([&] {
++    fs().catalogue.remove(identify(path), true);
++    return 0;
++  });
++}
++int rename(const char *from, const char *to) {
++  return guard([&] {
++    auto [parent, name] = split(to);
++    fs().catalogue.rename(identify(from), parent, name);
++    return 0;
++  });
++}
++int read(const char *path, char *buffer, size_t size, off_t offset,
++         fuse_file_info *fi) {
++  return guard([&] {
++    if (offset < 0)
++      return -EINVAL;
++    auto data = fs().catalogue.read(identify(path, fi), offset, size);
++    std::memcpy(buffer, data.data(), data.size());
++    return int(data.size());
++  });
++}
++int write(const char *path, const char *buffer, size_t size, off_t offset,
++          fuse_file_info *fi) {
++  return guard([&] {
++    if (offset < 0)
++      return -EINVAL;
++    fs().catalogue.write(identify(path, fi), offset, buffer, size);
++    return int(size);
++  });
++}
++int truncate(const char *path, off_t size) {
++  return guard([&] {
++    if (size < 0)
++      return -EINVAL;
++    fs().catalogue.truncate(identify(path), size);
++    return 0;
++  });
++}
++int ftruncate(const char *path, off_t size, fuse_file_info *fi) {
++  return guard([&] {
++    if (size < 0)
++      return -EINVAL;
++    fs().catalogue.truncate(identify(path, fi), size);
++    return 0;
++  });
++}
++int fsync(const char *path, int, fuse_file_info *fi) {
++  return guard([&] {
++    fs().catalogue.sync(identify(path, fi));
++    return 0;
++  });
++}
++int flush(const char *path, fuse_file_info *fi) { return fsync(path, 0, fi); }
++int release(const char *path, fuse_file_info *fi) {
++  return guard([&] {
++    fs().catalogue.close(identify(path, fi));
++    return 0;
++  });
++}
++int statfs(const char *, struct statvfs *st) {
++  std::memset(st, 0, sizeof(*st));
++  st->f_bsize = st->f_frsize = 4096;
++  st->f_namemax = 255;
++  for (auto &storage : fs().transport.storages()) {
++    st->f_blocks += storage.capacity / 4096;
++    st->f_bfree += storage.available / 4096;
++  }
++  st->f_bavail = st->f_bfree;
++  st->f_files = st->f_ffree = st->f_favail = 1000000;
++  return 0;
++}
++int utimens(const char *path, const timespec times[2]) {
++  return guard([&] {
++    fs().catalogue.touch(identify(path), times);
++    return 0;
++  });
++}
++int chmod(const char *path, mode_t mode) {
++  return guard([&] {
++    fs().catalogue.chmod(identify(path), mode);
++    return 0;
++  });
++}
++int chown(const char *, uid_t uid, gid_t gid) {
++  return (uid == uid_t(-1) || uid == fs().uid) &&
++                 (gid == gid_t(-1) || gid == fs().gid)
++             ? 0
++             : -EPERM;
++}
++int getxattr(const char *, const char *, char *, size_t) { return -ENODATA; }
++int listxattr(const char *, char *, size_t) { return 0; }
++void *init(fuse_conn_info *) { return fuse_get_context()->private_data; }
++} // namespace mtpfs
++int main(int argc, char **argv) {
++  try {
++    unsigned bus = 0, number = 0;
++    uid_t uid = 0;
++    gid_t gid = 0;
++    bool writable = true;
++    std::vector<char *> arguments{argv[0]};
++    for (int i = 1; i < argc; ++i) {
++      if (std::strncmp(argv[i], "--device=", 9) == 0) {
++        if (std::sscanf(argv[i] + 9, "%u,%u", &bus, &number) != 2)
++          mtpfs::fail(EINVAL, "Invalid MTP device");
++      } else if (std::strncmp(argv[i], "--owner=", 8) == 0) {
++        if (std::sscanf(argv[i] + 8, "%u,%u", &uid, &gid) != 2)
++          mtpfs::fail(EINVAL, "Invalid mount owner");
++      } else if (std::strcmp(argv[i], "--read-only") == 0)
++        writable = false;
++      else
++        arguments.push_back(argv[i]);
++    }
++    const char *cache = std::getenv("ALFS_MTP_CACHE");
++    if (!cache || !bus)
++      mtpfs::fail(EINVAL, "MTP device and ALFS_MTP_CACHE are required");
++    std::filesystem::create_directories(cache);
++    auto lock = mtpfs::open_file(std::filesystem::path(cache) / "owner.lock",
++                                 O_CREAT | O_RDWR);
++    mtpfs::check(flock(lock.get(), LOCK_EX | LOCK_NB) == 0,
++                 "MTP cache is already in use");
++    mtpfs::Transport transport(bus, number, writable);
++    mtpfs::Catalogue catalogue(transport, cache, writable);
++    mtpfs::Filesystem context{catalogue, transport, uid, gid, writable};
++    fuse_operations ops{};
++    ops.init = mtpfs::init;
++    ops.getattr = mtpfs::getattr;
++    ops.fgetattr = mtpfs::fgetattr;
++    ops.readdir = mtpfs::readdir;
++    ops.opendir = mtpfs::opendir;
++    ops.open = mtpfs::open;
++    ops.create = mtpfs::create;
++    ops.mknod = mtpfs::mknod;
++    ops.mkdir = mtpfs::mkdir;
++    ops.unlink = mtpfs::unlink;
++    ops.rmdir = mtpfs::rmdir;
++    ops.rename = mtpfs::rename;
++    ops.read = mtpfs::read;
++    ops.write = mtpfs::write;
++    ops.truncate = mtpfs::truncate;
++    ops.ftruncate = mtpfs::ftruncate;
++    ops.fsync = mtpfs::fsync;
++    ops.flush = mtpfs::flush;
++    ops.release = mtpfs::release;
++    ops.statfs = mtpfs::statfs;
++    ops.utimens = mtpfs::utimens;
++    ops.chmod = mtpfs::chmod;
++    ops.chown = mtpfs::chown;
++    ops.getxattr = mtpfs::getxattr;
++    ops.listxattr = mtpfs::listxattr;
++    ops.flag_nullpath_ok = 1;
++    int result = fuse_main(arguments.size(), arguments.data(), &ops, &context);
++    catalogue.finish();
++    return result;
++  } catch (const std::exception &e) {
++    std::fprintf(stderr, "mtpfs: %s\n", e.what());
++    return 1;
++  }
++}
+diff --git a/mtpfs/src/support.cpp b/mtpfs/src/support.cpp
+new file mode 100644
+index 0000000..f0c8428
+--- /dev/null
++++ b/mtpfs/src/support.cpp
+@@ -0,0 +1,127 @@
++#include "support.hpp"
++#include <chrono>
++#include <fcntl.h>
++#include <fstream>
++#include <iomanip>
++#include <memory>
++#include <openssl/evp.h>
++#include <sstream>
++#include <unistd.h>
++#include <utility>
++
++namespace mtpfs {
++Fd::~Fd() {
++  if (value_ >= 0)
++    ::close(value_);
++}
++Fd::Fd(Fd &&other) noexcept : value_(std::exchange(other.value_, -1)) {}
++Fd &Fd::operator=(Fd &&other) noexcept {
++  if (this != &other) {
++    if (value_ >= 0)
++      ::close(value_);
++    value_ = std::exchange(other.value_, -1);
++  }
++  return *this;
++}
++Fd open_file(const std::filesystem::path &path, int flags, unsigned mode) {
++  int fd = ::open(path.c_str(), flags | O_CLOEXEC, mode);
++  check(fd >= 0, "Open " + path.string());
++  return Fd(fd);
++}
++void sync_file(int fd) { check(::fsync(fd) == 0, "Persist MTP cache data"); }
++void sync_directory(const std::filesystem::path &path) {
++  auto fd = open_file(path, O_RDONLY | O_DIRECTORY);
++  sync_file(fd.get());
++}
++void write_all(int fd, const void *data, size_t size, uint64_t offset) {
++  auto bytes = static_cast<const char *>(data);
++  while (size) {
++    auto written = ::pwrite(fd, bytes, size, offset);
++    if (written < 0 && errno == EINTR)
++      continue;
++    if (written <= 0)
++      fail(written < 0 ? errno : EIO, "Write MTP cache data");
++    bytes += written;
++    offset += written;
++    size -= written;
++  }
++}
++std::vector<char> read_at(int fd, size_t size, uint64_t offset) {
++  std::vector<char> bytes(size);
++  size_t done = 0;
++  while (done < size) {
++    auto count = ::pread(fd, bytes.data() + done, size - done, offset + done);
++    if (count < 0 && errno == EINTR)
++      continue;
++    if (count < 0)
++      fail(errno, "Read MTP cache data");
++    if (!count)
++      break;
++    done += count;
++  }
++  bytes.resize(done);
++  return bytes;
++}
++void atomic_file(const std::filesystem::path &path,
++                 const std::string &content) {
++  auto next = path;
++  next += ".next";
++  auto fd = open_file(next, O_WRONLY | O_CREAT | O_TRUNC);
++  write_all(fd.get(), content.data(), content.size(), 0);
++  sync_file(fd.get());
++  check(::rename(next.c_str(), path.c_str()) == 0, "Publish " + path.string());
++  sync_directory(path.parent_path());
++}
++std::string unique_id() {
++  std::ifstream file("/proc/sys/kernel/random/uuid");
++  std::string id;
++  if (!(file >> id))
++    fail(EIO, "Generate MTP transaction identity");
++  return id;
++}
++namespace {
++using Digest = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>;
++Digest digest() {
++  Digest ctx(EVP_MD_CTX_new(), EVP_MD_CTX_free);
++  if (!ctx || EVP_DigestInit_ex(ctx.get(), EVP_sha256(), nullptr) != 1)
++    fail(EIO, "Initialize SHA-256");
++  return ctx;
++}
++std::string finish(Digest &ctx) {
++  unsigned char bytes[EVP_MAX_MD_SIZE];
++  unsigned size = 0;
++  if (EVP_DigestFinal_ex(ctx.get(), bytes, &size) != 1)
++    fail(EIO, "Finish SHA-256");
++  std::ostringstream hex;
++  for (unsigned i = 0; i < size; ++i)
++    hex << std::hex << std::setfill('0') << std::setw(2) << unsigned(bytes[i]);
++  return hex.str();
++}
++} // namespace
++std::string hash_text(const std::string &text) {
++  auto ctx = digest();
++  if (EVP_DigestUpdate(ctx.get(), text.data(), text.size()) != 1)
++    fail(EIO, "Hash device identity");
++  return finish(ctx);
++}
++std::string json_quote(const std::string &value) {
++  std::ostringstream out;
++  out << '"';
++  for (unsigned char c : value) {
++    if (c == '"' || c == '\\')
++      out << '\\' << char(c);
++    else if (c < 32)
++      out << "\\u" << std::hex << std::setw(4) << std::setfill('0')
++          << unsigned(c);
++    else
++      out << char(c);
++  }
++  out << '"';
++  return out.str();
++}
++double now() {
++  return std::chrono::duration<double>(
++             std::chrono::system_clock::now().time_since_epoch())
++      .count();
++}
++} // namespace mtpfs
+diff --git a/mtpfs/src/support.hpp b/mtpfs/src/support.hpp
+new file mode 100644
+index 0000000..fad6e77
+--- /dev/null
++++ b/mtpfs/src/support.hpp
+@@ -0,0 +1,46 @@
++#pragma once
++#include <cerrno>
++#include <cstdint>
++#include <filesystem>
++#include <stdexcept>
++#include <string>
++#include <system_error>
++#include <vector>
++
++namespace mtpfs {
++// Cache only complete read pages. MTP commands remain bounded to allow reads
++// and metadata requests between chunks of a large upload.
++constexpr uint64_t cache_block_size = 64 * 1024;
++constexpr uint64_t transfer_block_size = 1024 * 1024;
++using NodeId = int64_t;
++
++[[noreturn]] inline void fail(int code, const std::string &message) {
++  throw std::system_error(code, std::generic_category(), message);
++}
++inline void check(bool ok, const std::string &message) {
++  if (!ok)
++    fail(errno, message);
++}
++class Fd {
++  int value_ = -1;
++
++public:
++  explicit Fd(int value = -1) : value_(value) {}
++  ~Fd();
++  Fd(const Fd &) = delete;
++  Fd &operator=(const Fd &) = delete;
++  Fd(Fd &&other) noexcept;
++  Fd &operator=(Fd &&other) noexcept;
++  int get() const { return value_; }
++};
++Fd open_file(const std::filesystem::path &, int flags, unsigned mode = 0600);
++void sync_file(int fd);
++void sync_directory(const std::filesystem::path &);
++void write_all(int fd, const void *, size_t, uint64_t offset);
++std::vector<char> read_at(int fd, size_t, uint64_t offset);
++void atomic_file(const std::filesystem::path &, const std::string &);
++std::string unique_id();
++std::string hash_text(const std::string &);
++std::string json_quote(const std::string &);
++double now();
++} // namespace mtpfs
+diff --git a/mtpfs/src/transport.cpp b/mtpfs/src/transport.cpp
+new file mode 100644
+index 0000000..a05df58
+--- /dev/null
++++ b/mtpfs/src/transport.cpp
+@@ -0,0 +1,278 @@
++#include "transport.hpp"
++#include <cstdlib>
++#include <cstring>
++#include <fcntl.h>
++#include <memory>
++#include <unordered_set>
++
++namespace mtpfs {
++void Transport::checked(int result, const char *operation) {
++  if (!result)
++    return;
++  std::string message(operation);
++  uint16_t response = 0;
++  for (auto error = LIBMTP_Get_Errorstack(device_); error;
++       error = error->next) {
++    if (error->error_text)
++      message += ": " + std::string(error->error_text);
++    if (error->ptp_code)
++      response = error->ptp_code;
++  }
++  LIBMTP_Clear_Errorstack(device_);
++  // A completed rejection of one directory/read is not a dead session. In
++  // particular Android can invalidate a media handle during background scans.
++  if ((response >= 0x2000 && response < 0x3000) ||
++      (response >= 0xa000 && response < 0xb000)) {
++    int code = response == 0x2009 || response == 0x201a ? ENOENT
++               : response == 0x200f                     ? EACCES
++               : response == 0x2005 || response == 0x200a ||
++                       response == 0xa801 || response == 0xa80a
++                   ? EOPNOTSUPP
++                   : EIO;
++    fail(code, message);
++  }
++  // A failed transaction may leave the wire protocol mid-command. Never issue
++  // another operation on that session or retry a possibly completed mutation.
++  failed_ = true;
++  failure_ = std::make_exception_ptr(
++      std::system_error(EIO, std::generic_category(), message));
++  std::rethrow_exception(failure_);
++}
++Transport::Transport(unsigned bus, unsigned number, bool writable) {
++  LIBMTP_Init();
++  LIBMTP_raw_device_t *raw = nullptr;
++  int count = 0;
++  auto detected = LIBMTP_Detect_Raw_Devices(&raw, &count);
++  std::unique_ptr<LIBMTP_raw_device_t, decltype(&free)> devices(raw, free);
++  if (detected)
++    fail(ENODEV, "Detect MTP device");
++  uint16_t vendor = 0, product = 0;
++  for (int i = 0; i < count; ++i) {
++    if (raw[i].bus_location == bus && raw[i].devnum == number) {
++      vendor = raw[i].device_entry.vendor_id;
++      product = raw[i].device_entry.product_id;
++      device_ = LIBMTP_Open_Raw_Device_Uncached(&raw[i]);
++      break;
++    }
++  }
++  if (!device_)
++    fail(ENODEV, "Open MTP session; unlock the phone and enable file transfer");
++  try {
++    // Harmony devices can wait for the interrupt endpoint to be drained
++    // before completing a bulk reply. This bounded reader owns no catalogue
++    // state and is joined before libmtp frees the USB handle.
++    events_ = std::thread([this] {
++      while (!stop_events_) {
++        LIBMTP_event_t event;
++        uint32_t value;
++        if (LIBMTP_Read_Event_Timeout(device_, &event, &value, 500) < 0)
++          break;
++      }
++    });
++    LIBMTP_Clear_Errorstack(device_);
++    checked(LIBMTP_Get_Storage(device_, 0), "Query MTP storage");
++    for (auto s = device_->storage; s; s = s->next)
++      storages_.push_back(
++          {s->id, s->StorageDescription ? s->StorageDescription : "Storage",
++           s->MaxCapacity, s->FreeSpaceInBytes});
++    if (storages_.empty())
++      fail(ENODEV, "Phone returned no storage; allow data access on the phone");
++    if (!LIBMTP_Check_Capability(device_, LIBMTP_DEVICECAP_GetPartialObject))
++      fail(EOPNOTSUPP, "MTP device does not support bounded partial reads");
++    if (writable &&
++        (!LIBMTP_Check_Capability(device_,
++                                  LIBMTP_DEVICECAP_SendPartialObject) ||
++         !LIBMTP_Check_Capability(device_, LIBMTP_DEVICECAP_EditObjects)))
++      fail(EOPNOTSUPP, "Writable MTP requires partial writes and object "
++                       "editing; use a read-only mount");
++    can_move_ = LIBMTP_Check_Capability(device_, LIBMTP_DEVICECAP_MoveObject);
++    std::unique_ptr<char, decltype(&free)> serial(
++        LIBMTP_Get_Serialnumber(device_), free);
++    identity_ =
++        hash_text(std::to_string(vendor) + ":" + std::to_string(product) + ":" +
++                  (serial ? serial.get() : ""));
++    owner_ = std::thread([this] { run(); });
++  } catch (...) {
++    stop_events_ = true;
++    if (events_.joinable())
++      events_.join();
++    LIBMTP_Release_Device(device_);
++    device_ = nullptr;
++    throw;
++  }
++}
++Transport::~Transport() {
++  {
++    std::lock_guard lock(mutex_);
++    stopping_ = true;
++  }
++  ready_.notify_one();
++  if (owner_.joinable())
++    owner_.join();
++  stop_events_ = true;
++  if (events_.joinable())
++    events_.join();
++  if (device_)
++    LIBMTP_Release_Device(device_);
++}
++void Transport::run() {
++  unsigned foreground_count = 0;
++  for (;;) {
++    std::function<void()> task;
++    {
++      std::unique_lock lock(mutex_);
++      ready_.wait(lock, [this] {
++        return stopping_ || !foreground_.empty() || !background_.empty();
++      });
++      if (foreground_.empty() && background_.empty() && stopping_)
++        return;
++      bool use_foreground =
++          !foreground_.empty() && (background_.empty() || foreground_count < 8);
++      auto &queue = use_foreground ? foreground_ : background_;
++      task = std::move(queue.front());
++      queue.pop_front();
++      foreground_count = use_foreground ? foreground_count + 1 : 0;
++    }
++    task();
++  }
++}
++std::vector<RemoteEntry> Transport::list(uint32_t storage, uint32_t parent,
++                                         Priority priority) {
++  auto ids = call(priority, [=, this] {
++    uint32_t *values = nullptr;
++    int count = LIBMTP_Get_Children(
++        device_, storage, parent ? parent : LIBMTP_FILES_AND_FOLDERS_ROOT,
++        &values);
++    std::unique_ptr<uint32_t, decltype(&free)> owned(values, free);
++    if (count < 0)
++      checked(-1, ("List MTP directory " + std::to_string(storage) + "/" +
++                   std::to_string(parent))
++                      .c_str());
++    return count ? std::vector<uint32_t>(values, values + count)
++                 : std::vector<uint32_t>();
++  });
++  std::vector<RemoteEntry> result;
++  std::unordered_set<uint32_t> seen;
++  for (auto id : ids) {
++    // Observed on Samsung: GetObjectHandles can repeat the same handle after
++    // directory rename. Distinct handles with the same name remain a conflict.
++    if (!seen.insert(id).second)
++      continue;
++    try {
++      result.push_back(call(priority, [=, this] {
++        std::unique_ptr<LIBMTP_file_t, decltype(&LIBMTP_destroy_file_t)> entry(
++            LIBMTP_Get_Filemetadata(device_, id), LIBMTP_destroy_file_t);
++        if (!entry)
++          checked(-1, "Read MTP object metadata");
++        if (!entry->filename || !*entry->filename ||
++            std::strchr(entry->filename, '/'))
++          fail(EIO, "Phone returned an invalid filename");
++        return RemoteEntry{id,
++                           storage,
++                           parent,
++                           entry->filename,
++                           entry->filesize,
++                           entry->modificationdate,
++                           entry->filetype == LIBMTP_FILETYPE_FOLDER};
++      }));
++    } catch (const std::system_error &error) {
++      if (error.code().value() != ENOENT)
++        throw;
++      // A phone-side scan can remove an object after the handle list arrived.
++    }
++  }
++  return result;
++}
++std::vector<char> Transport::read(uint32_t object, uint64_t offset,
++                                  uint32_t size, Priority priority) {
++  std::vector<char> bytes;
++  while (bytes.size() < size) {
++    auto piece = call(priority, [=, this, done = bytes.size()] {
++      unsigned char *data = nullptr;
++      unsigned count = 0;
++      int result = LIBMTP_GetPartialObject(device_, object, offset + done,
++                                           size - done, &data, &count);
++      std::unique_ptr<unsigned char, decltype(&free)> owned(data, free);
++      checked(result, "Read MTP block");
++      if (count > size - done || (count && !data))
++        fail(EIO, "Invalid MTP block length");
++      return count ? std::vector<char>(data, data + count)
++                   : std::vector<char>();
++    });
++    if (piece.empty())
++      break;
++    bytes.insert(bytes.end(), piece.begin(), piece.end());
++  }
++  return bytes;
++}
++uint32_t Transport::create(uint32_t storage, uint32_t parent,
++                           const std::string &name, bool directory) {
++  return call(Priority::background, [=, this] {
++    auto root = parent ? parent : LIBMTP_FILES_AND_FOLDERS_ROOT;
++    if (directory) {
++      auto id = LIBMTP_Create_Folder(device_, const_cast<char *>(name.c_str()),
++                                     root, storage);
++      if (!id)
++        checked(-1, "Create MTP directory");
++      return id;
++    }
++    std::unique_ptr<LIBMTP_file_t, decltype(&LIBMTP_destroy_file_t)> entry(
++        LIBMTP_new_file_t(), LIBMTP_destroy_file_t);
++    if (!entry)
++      fail(ENOMEM, "Allocate MTP metadata");
++    entry->filename = strdup(name.c_str());
++    entry->parent_id = root;
++    entry->storage_id = storage;
++    entry->filesize = 0;
++    entry->filetype = LIBMTP_FILETYPE_UNKNOWN;
++    auto empty = open_file("/dev/null", O_RDONLY);
++    checked(LIBMTP_Send_File_From_File_Descriptor(
++                device_, empty.get(), entry.get(), nullptr, nullptr),
++            "Create empty MTP object");
++    return entry->item_id;
++  });
++}
++void Transport::begin(uint32_t object) {
++  call(Priority::background, [=, this] {
++    checked(LIBMTP_BeginEditObject(device_, object), "Begin MTP edit");
++  });
++}
++void Transport::write(uint32_t object, uint64_t offset,
++                      std::vector<char> bytes) {
++  call(Priority::background, [this, object, offset,
++                              bytes = std::move(bytes)]() mutable {
++    checked(LIBMTP_SendPartialObject(
++                device_, object, offset,
++                reinterpret_cast<unsigned char *>(bytes.data()), bytes.size()),
++            "Write MTP block");
++  });
++}
++void Transport::end(uint32_t object) {
++  call(Priority::background, [=, this] {
++    checked(LIBMTP_EndEditObject(device_, object), "Finish MTP edit");
++  });
++}
++void Transport::resize(uint32_t object, uint64_t size) {
++  call(Priority::background, [=, this] {
++    checked(LIBMTP_TruncateObject(device_, object, size), "Resize MTP object");
++  });
++}
++void Transport::rename(uint32_t object, const std::string &name) {
++  call(Priority::background, [=, this] {
++    checked(LIBMTP_Set_Object_Filename(device_, object,
++                                       const_cast<char *>(name.c_str())),
++            "Rename MTP object");
++  });
++}
++void Transport::move(uint32_t object, uint32_t storage, uint32_t parent) {
++  call(Priority::background, [=, this] {
++    checked(LIBMTP_Move_Object(device_, object, storage, parent),
++            "Move MTP object");
++  });
++}
++void Transport::remove(uint32_t object) {
++  call(Priority::background, [=, this] {
++    checked(LIBMTP_Delete_Object(device_, object), "Delete MTP object");
++  });
++}
++} // namespace mtpfs
+diff --git a/mtpfs/src/transport.hpp b/mtpfs/src/transport.hpp
+new file mode 100644
+index 0000000..9600a99
+--- /dev/null
++++ b/mtpfs/src/transport.hpp
+@@ -0,0 +1,86 @@
++#pragma once
++#include "support.hpp"
++#include <atomic>
++#include <condition_variable>
++#include <deque>
++#include <functional>
++#include <future>
++#include <libmtp.h>
++#include <mutex>
++#include <thread>
++
++namespace mtpfs {
++struct RemoteEntry {
++  uint32_t id, storage, parent;
++  std::string name;
++  uint64_t size;
++  int64_t modified;
++  bool directory;
++};
++struct Storage {
++  uint32_t id;
++  std::string name;
++  uint64_t capacity, available;
++};
++enum class Priority { foreground, background };
++
++// One owner serializes bulk transactions. An upload submits one block at a
++// time, allowing foreground reads to run between blocks without sharing libmtp
++// state.
++class Transport {
++  LIBMTP_mtpdevice_t *device_ = nullptr;
++  std::mutex mutex_;
++  std::condition_variable ready_;
++  std::deque<std::function<void()>> foreground_, background_;
++  bool stopping_ = false;
++  std::thread owner_, events_;
++  std::atomic<bool> stop_events_{false};
++  std::exception_ptr failure_;
++  std::atomic<bool> failed_{false};
++  std::string identity_;
++  bool can_move_ = false;
++  std::vector<Storage> storages_;
++  void run();
++  void checked(int result, const char *operation);
++  template <class F>
++  auto call(Priority priority, F function) -> decltype(function()) {
++    using Result = decltype(function());
++    auto task = std::make_shared<std::packaged_task<Result()>>(
++        [this, function = std::move(function)]() mutable {
++          if (failure_)
++            std::rethrow_exception(failure_);
++          LIBMTP_Clear_Errorstack(device_);
++          return function();
++        });
++    auto result = task->get_future();
++    {
++      std::lock_guard lock(mutex_);
++      (priority == Priority::foreground ? foreground_ : background_)
++          .emplace_back([task] { (*task)(); });
++    }
++    ready_.notify_one();
++    return result.get();
++  }
++
++public:
++  Transport(unsigned bus, unsigned number, bool writable);
++  ~Transport();
++  Transport(const Transport &) = delete;
++  bool can_move() const { return can_move_; }
++  bool failed() const { return failed_; }
++  const std::string &identity() const { return identity_; }
++  const std::vector<Storage> &storages() const { return storages_; }
++  std::vector<RemoteEntry> list(uint32_t storage, uint32_t parent, Priority);
++  std::vector<char> read(uint32_t object, uint64_t offset, uint32_t size,
++                         Priority);
++  uint32_t create(uint32_t storage, uint32_t parent, const std::string &name,
++                  bool directory);
++  void begin(uint32_t object);
++  void write(uint32_t object, uint64_t offset, std::vector<char> bytes);
++  void resize(uint32_t object, uint64_t size);
++  void end(uint32_t object);
++  void rename(uint32_t object, const std::string &name);
++  void move(uint32_t object, uint32_t storage, uint32_t parent);
++  void remove(uint32_t object);
++};
++} // namespace mtpfs
+diff --git a/scripts/libmtp-response-status.patch b/scripts/libmtp-response-status.patch
+new file mode 100644
+index 0000000..423f9f5
+--- /dev/null
++++ b/scripts/libmtp-response-status.patch
+@@ -0,0 +1,66 @@
++--- a/src/libusb1-glue.c
+++++ b/src/libusb1-glue.c
++@@ -1426,6 +1426,19 @@
++ 			break;
++ 		}
++ 		if (dtoh16(usbdata.type)!=PTP_USB_CONTAINER_DATA) {
+++            /* A rejected read has a response phase but no data phase. The
+++             * complete matching response is already consumed; preserve its
+++             * status instead of disguising e.g. InvalidObjectHandle as a
+++             * broken bulk stream. Never accept a mismatched transaction. */
+++            uint16_t response = dtoh16(usbdata.code);
+++            if (dtoh16(usbdata.type) == PTP_USB_CONTAINER_RESPONSE &&
+++                rlen >= 12 && rlen <= 32 && (rlen % 4) == 0 &&
+++                dtoh32(usbdata.length) == rlen &&
+++                dtoh32(usbdata.trans_id) == ptp->Transaction_ID &&
+++                response > PTP_RC_OK && response < 0x3000) {
+++                ret = response;
+++                break;
+++            }
++ 			ret = PTP_ERROR_DATA_EXPECTED;
++ 			break;
++ 		}
++--- a/src/libmtp.h.in
+++++ b/src/libmtp.h.in
++@@ -552,6 +552,7 @@
++  */
++ struct LIBMTP_error_struct {
++   LIBMTP_error_number_t errornumber;
+++  uint16_t ptp_code; /* Private helper ABI: structured protocol status. */
++   char *error_text;
++   LIBMTP_error_t *next;
++ };
++--- a/src/libmtp.c
+++++ b/src/libmtp.c
++@@ -2561,6 +2561,7 @@
++   }
++   newerror = (LIBMTP_error_t *) malloc(sizeof(LIBMTP_error_t));
++   newerror->errornumber = errornumber;
+++  newerror->ptp_code = 0;
++   newerror->error_text = strdup(error_text);
++   newerror->next = NULL;
++   if (device->errorstack == NULL) {
++@@ -2595,6 +2596,9 @@
++     snprintf(outstr, sizeof(outstr), "Error %04x: %s", ptp_error, ptp_strerror(ptp_error, params->deviceinfo.VendorExtensionID));
++     outstr[sizeof(outstr)-1] = '\0';
++     add_error_to_errorstack(device, LIBMTP_ERROR_PTP_LAYER, outstr);
+++    LIBMTP_error_t *last = device->errorstack;
+++    while (last->next != NULL) last = last->next;
+++    last->ptp_code = ptp_error;
++   }
++ }
++ 
++--- a/src/libmtp.c
+++++ b/src/libmtp.c
++@@ -4466,8 +4466,10 @@
++   }
++ 
++   ret = ptp_object_want(params, fileid, PTPOBJECT_OBJECTINFO_LOADED|PTPOBJECT_MTPPROPLIST_LOADED, &ob);
++-  if (ret != PTP_RC_OK)
+++  if (ret != PTP_RC_OK) {
+++    add_ptp_error_to_errorstack(device, ret, "LIBMTP_Get_Filemetadata: object metadata unavailable");
++     return NULL;
+++  }
++ 
++   return obj2file(device, ob);
++ }

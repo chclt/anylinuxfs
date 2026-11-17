@@ -1,0 +1,135 @@
+{
+  "directory_cache": [
+    {
+      "errno": 5,
+      "error": "[Errno 5] I/O error: '/mnt/upstream/Internal storage/Android/data/org.videolan.vlc/files/medialib'",
+      "driver": "baseline",
+      "attempt": 1,
+      "seconds": 0.9672186679999999
+    },
+    {
+      "entries": [],
+      "errno": 0,
+      "driver": "baseline",
+      "attempt": 2,
+      "seconds": 0.002901374999999984
+    },
+    {
+      "entries": [],
+      "errno": 0,
+      "driver": "baseline",
+      "attempt": 3,
+      "seconds": 0.0002038749999999645
+    },
+    {
+      "errno": 5,
+      "error": "[Errno 5] I/O error: '/mnt/upstream/Internal storage/Android/data/org.videolan.vlc/files/medialib'",
+      "driver": "fixed",
+      "attempt": 1,
+      "seconds": 0.35803954199999977
+    },
+    {
+      "errno": 5,
+      "error": "[Errno 5] I/O error: '/mnt/upstream/Internal storage/Android/data/org.videolan.vlc/files/medialib'",
+      "driver": "fixed",
+      "attempt": 2,
+      "seconds": 0.0035805840000002753
+    },
+    {
+      "errno": 5,
+      "error": "[Errno 5] I/O error: '/mnt/upstream/Internal storage/Android/data/org.videolan.vlc/files/medialib'",
+      "driver": "fixed",
+      "attempt": 3,
+      "seconds": 0.003580541999999909
+    }
+  ],
+  "operations": [
+    {
+      "step": "32 MiB complete readback",
+      "seconds": 9.447014207951725,
+      "sha256": "7c998c4ca4113b3bb119093baf564f55fd019661b6122d28b795d326692cb589"
+    },
+    {
+      "step": "cross-directory move",
+      "rename_errno": 18,
+      "copy_delete_fallback": true,
+      "sha256": "626593ca13e6d642af76705a9ec4e8dc6b170d03ba8480b51e89144705d528ec"
+    },
+    {
+      "step": "overwrite grow and shrink",
+      "passed": true
+    },
+    {
+      "step": "cancel command-line copy",
+      "sent_SIGTERM": true,
+      "exit": -15,
+      "seconds": 0.9920011661015451,
+      "partial_size": 8388608,
+      "source_size": 478481295,
+      "prefix_matches": true,
+      "sha256": "06837dfa87905832886deb70f5f7c28e29b569586a3dc924824f967efad4f591"
+    },
+    {
+      "step": "ready for disconnect",
+      "passed": true
+    }
+  ],
+  "disconnect": {
+    "error": "[Errno 5] Input/output error",
+    "errno": 5,
+    "seconds": 17.05486458307132,
+    "total_acknowledged": 166723584,
+    "time": 1794907516.569362
+  },
+  "unmount_seconds": 9.05,
+  "driver_failure": "Uncaught DeviceNotFoundException terminates AFT; exact throw site not captured. WRAP_EX reconnect path clears active editing sessions, whose destructor calls throwing EndEditObject. Reconnect/replayed request exceptions also escape this handler.",
+  "recovery_pending": false,
+  "production_integrated": false,
+  "recovery": [
+    {
+      "file": "complete.bin",
+      "size": 33554432,
+      "sha256": "7c998c4ca4113b3bb119093baf564f55fd019661b6122d28b795d326692cb589",
+      "matches": true,
+      "seconds": 5.190415584016591
+    },
+    {
+      "file": "sub/\u4e2d\u6587 \u79fb\u52a8.bin",
+      "size": 240000,
+      "sha256": "626593ca13e6d642af76705a9ec4e8dc6b170d03ba8480b51e89144705d528ec",
+      "matches": true,
+      "seconds": 0.06995004205964506
+    },
+    {
+      "file": "overwrite.bin",
+      "size": 17,
+      "sha256": "a54c652661462ec50ba98e1f6bff016022082754bc9b71abf216d3e11d64e186",
+      "matches": true,
+      "seconds": 0.04681920795701444
+    },
+    {
+      "file": "cancelled.mp4",
+      "size": 8388608,
+      "sha256": "06837dfa87905832886deb70f5f7c28e29b569586a3dc924824f967efad4f591",
+      "matches": true,
+      "seconds": 1.3431382500566542
+    },
+    {
+      "file": "disconnect-write.bin",
+      "size": 32505856,
+      "every_byte_matches_source_pattern": true,
+      "acknowledged_before_disconnect": 32505856,
+      "first_mismatch_offset": null,
+      "acknowledged_prefix_matches": true
+    },
+    {
+      "step": "new write after reconnect",
+      "bytes": 8388608,
+      "matches": true
+    },
+    {
+      "step": "cleanup",
+      "root_absent": true
+    }
+  ]
+}

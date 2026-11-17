@@ -1,0 +1,26 @@
+{
+  "started": 1794911467.1176279,
+  "checks": [
+    {
+      "iteration": 0,
+      "count": 480,
+      "unique": 480
+    },
+    {
+      "iteration": 1,
+      "count": 480,
+      "unique": 480
+    },
+    {
+      "iteration": 2,
+      "count": 480,
+      "unique": 480
+    }
+  ],
+  "mutation_check": {
+    "seen": 480,
+    "unique": 480,
+    "unaffected_files": 238,
+    "all_unaffected_present": true
+  }
+}

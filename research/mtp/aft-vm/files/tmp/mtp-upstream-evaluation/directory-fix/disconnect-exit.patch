@@ -1,0 +1,74 @@
+--- a/fuse/fuse.cpp
++++ b/fuse/fuse.cpp
+@@ -658,7 +658,12 @@
+ 		{
+ 			auto i = _openedFiles.find(ino);
+ 			if (i != _openedFiles.end())
++			{
++				auto transaction = i->second;
+ 				_openedFiles.erase(i);
++				// Report close errors through the operation, outside the destructor.
++				transaction->Finish();
++			}
+ 		}
+ 
+ 		void Release(fuse_req_t req, FuseId ino, struct fuse_file_info *fi)
+@@ -807,13 +812,10 @@
+ 
+ 	std::unique_ptr<FuseWrapper>	g_wrapper;
+ 
++// A lost session invalidates object handles. Report the failure; do not reconnect
++// and replay a possibly mutating request against a new session.
+ #define WRAP_EX(...) do { \
+ 		try { return __VA_ARGS__ ; } \
+-		catch (const mtp::usb::DeviceNotFoundException &) \
+-		{ \
+-			g_wrapper->Connect(); \
+-			__VA_ARGS__ ; \
+-		} \
+ 		catch (const std::exception &ex) \
+ 		{ mtp::error(#__VA_ARGS__ " failed: ", ex.what()); fuse_reply_err(req, EIO); } \
+ 	} while(false)
+--- a/mtp/ptp/Session.h
++++ b/mtp/ptp/Session.h
+@@ -69,10 +69,12 @@
+ 		{
+ 			SessionPtr	_session;
+ 			ObjectId	_objectId;
++			bool		_finished;
+ 
+ 		public:
+ 			ObjectEditSession(const SessionPtr & session, ObjectId objectId);
+ 			~ObjectEditSession();
++			void Finish();
+ 
+ 			void Truncate(u64 size);
+ 			void Send(u64 offset, const ByteArray &data);
+--- a/mtp/ptp/Session.cpp
++++ b/mtp/ptp/Session.cpp
+@@ -553,11 +553,23 @@
+ 	void Session::RebootDevice()
+ 	{ RunTransaction(_defaultTimeout, OperationCode::RebootDevice); }
+ 
+-	Session::ObjectEditSession::ObjectEditSession(const SessionPtr & session, ObjectId objectId): _session(session), _objectId(objectId)
++	Session::ObjectEditSession::ObjectEditSession(const SessionPtr & session, ObjectId objectId): _session(session), _objectId(objectId), _finished(false)
+ 	{ session->BeginEditObject(objectId); }
+ 
+ 	Session::ObjectEditSession::~ObjectEditSession()
+-	{ _session->EndEditObject(_objectId); }
++	{
++		// Cleanup must not terminate the process when the device has disappeared.
++		try { Finish(); }
++		catch(const std::exception &ex) { mtp::error("closing edit session failed: ", ex.what()); }
++	}
++
++	void Session::ObjectEditSession::Finish()
++	{
++		if (_finished) return;
++		// A failed close has an uncertain outcome; do not replay it from cleanup.
++		_finished = true;
++		_session->EndEditObject(_objectId);
++	}
+ 
+ 	void Session::ObjectEditSession::Truncate(u64 size)
+ 	{ _session->TruncateObject(_objectId, size); }

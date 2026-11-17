@@ -1,0 +1,28 @@
+{
+  "log": "/Users/jike/Library/Logs/anylinuxfs_usb-BsNbKHRG.log",
+  "first_ms": 1794890643601,
+  "last_ms": 1794890874694,
+  "complete_counts": {
+    "0/true/0": 17,
+    "0/true/-32": 1,
+    "1/false/0": 323230,
+    "1/true/0": 9242
+  },
+  "usb_actual_bytes": {
+    "true": 537049,
+    "false": 1294568488
+  },
+  "nonzero": [
+    "USB trace time_ms=1794890644294 complete seq=18 ep=0 input=true requested=255 actual=0 status=-32 unlinked=false"
+  ],
+  "max_transfer_ms": 672,
+  "transfers_over_1_second": [],
+  "pending_at_end": {},
+  "control_handled_sequences": [
+    "11"
+  ],
+  "nonzero_note": "Only ep0 descriptor request index 0xEE during enumeration returned -32, before MTP mount readiness; all MTP data endpoint completions status=0.",
+  "host_nfs_current": "Mounted sync, rsize=wsize=1048576, status flags 0x0",
+  "host_kernel_nfs_log_last_12m": "No matching kernel NFS messages returned by log show.",
+  "driver_log": "One ReadDir InvalidObjectHandle (0x2009), logfile modified 2026-11-17 12:44:45 +0800; no path in this driver log, so not conclusively attributed to known restricted directory."
+}

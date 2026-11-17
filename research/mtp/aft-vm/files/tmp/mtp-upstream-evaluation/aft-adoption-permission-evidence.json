@@ -1,0 +1,12 @@
+{
+  "mtp_permission_log": {
+    "returncode": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "timezone": {
+    "returncode": 0,
+    "stdout": "Asia/Shanghai",
+    "stderr": ""
+  }
+}

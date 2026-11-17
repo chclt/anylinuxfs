@@ -1,0 +1,47 @@
+[
+  {
+    "file": "complete.bin",
+    "size": 33554432,
+    "sha256": "7c998c4ca4113b3bb119093baf564f55fd019661b6122d28b795d326692cb589",
+    "matches": true,
+    "seconds": 5.190415584016591
+  },
+  {
+    "file": "sub/\u4e2d\u6587 \u79fb\u52a8.bin",
+    "size": 240000,
+    "sha256": "626593ca13e6d642af76705a9ec4e8dc6b170d03ba8480b51e89144705d528ec",
+    "matches": true,
+    "seconds": 0.06995004205964506
+  },
+  {
+    "file": "overwrite.bin",
+    "size": 17,
+    "sha256": "a54c652661462ec50ba98e1f6bff016022082754bc9b71abf216d3e11d64e186",
+    "matches": true,
+    "seconds": 0.04681920795701444
+  },
+  {
+    "file": "cancelled.mp4",
+    "size": 8388608,
+    "sha256": "06837dfa87905832886deb70f5f7c28e29b569586a3dc924824f967efad4f591",
+    "matches": true,
+    "seconds": 1.3431382500566542
+  },
+  {
+    "file": "disconnect-write.bin",
+    "size": 32505856,
+    "every_byte_matches_source_pattern": true,
+    "acknowledged_before_disconnect": 32505856,
+    "first_mismatch_offset": null,
+    "acknowledged_prefix_matches": true
+  },
+  {
+    "step": "new write after reconnect",
+    "bytes": 8388608,
+    "matches": true
+  },
+  {
+    "step": "cleanup",
+    "root_absent": true
+  }
+]

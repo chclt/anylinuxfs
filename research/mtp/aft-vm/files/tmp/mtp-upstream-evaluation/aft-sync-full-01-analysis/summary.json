@@ -1,0 +1,53 @@
+{
+  "method": "TCP stream reassembly from SYN; complete RPC record parsing; timings use last request and reply byte",
+  "packets": 101172,
+  "truncated_data_packets": 0,
+  "flows": [
+    {
+      "ports": [
+        43726,
+        2049
+      ],
+      "stream_bytes": 481600292,
+      "records": 18366,
+      "gap": null,
+      "incomplete_tail": false
+    },
+    {
+      "ports": [
+        2049,
+        43726
+      ],
+      "stream_bytes": 2847692,
+      "records": 18366,
+      "gap": null,
+      "incomplete_tail": false
+    }
+  ],
+  "calls": 18366,
+  "replies": 18366,
+  "paired": 18366,
+  "unmatched_calls": 0,
+  "status_counts": {
+    "None": 1,
+    "0": 17945,
+    "2": 419,
+    "5": 1
+  },
+  "op_counts": {
+    "0": 1,
+    "getattr": 66,
+    "19": 1,
+    "20": 1,
+    "fsstat": 251,
+    "lookup": 419,
+    "access": 2545,
+    "readdirplus": 461,
+    "read": 3,
+    "9": 1,
+    "create": 3,
+    "write": 14609,
+    "commit": 2,
+    "setattr": 3
+  }
+}

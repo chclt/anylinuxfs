@@ -1,0 +1,42 @@
+{
+  "date": "2026-11-17",
+  "read_only": true,
+  "production_changes": false,
+  "timezone_policy": "User explicitly accepts Mac timezone for unqualified device timestamps. Keep explicit UTC/offset parsing; do not add phone timezone configuration or change phone settings.",
+  "phone": {
+    "www_txt_capture": "20261117T180307",
+    "www_txt_date_added": "20261117T180307",
+    "video_capture": "20261117T175839",
+    "video_date_added": "20261117T175839",
+    "separate_date_created_property": "returned 0xa802; do not equate DateAdded or CaptureDate with guaranteed filesystem birth time"
+  },
+  "guest_statx": {
+    "returncode": 0,
+    "stdout": "/mnt/upstream/Internal storage/Download/www.txt rc=0 errno=0 mask=17ff birth_supported=0 birth=0 mtime=1794909787 ctime=1794909787\n/mnt/upstream/Internal storage/Download/CHEN_5min_MIP04_Master_H264.mp4 rc=0 errno=0 mask=17ff birth_supported=0 birth=0 mtime=1794909519 ctime=1794909519\n",
+    "stderr": "",
+    "seconds": 0.20096445899999082
+  },
+  "mac_api_log": "PATH tmp/mtp-upstream-evaluation/mount/Internal storage/Download/www.txt\nstat rc=0 errno=0 birth=0 mtime=1794909787 ctime=1794909787\ngetattrlist rc=0 errno=0 len=72 returned_common=80000c00 birth=0 mtime=1794909787 ctime=1794909787\nNSFileManager creation=(null) unix=0 reference=0 error=(null)\nNSURL creation ok=1 value=(null) unix=0 reference=0 error=(null)\nxattr_list_size=0 errno=22\nPATH tmp/mtp-upstream-evaluation/mount/Internal storage/Download/CHEN_5min_MIP04_Master_H264.mp4\nstat rc=0 errno=0 birth=0 mtime=1794909519 ctime=1794909519\ngetattrlist rc=0 errno=0 len=72 returned_common=80000c00 birth=0 mtime=1794909519 ctime=1794909519\nNSFileManager creation=(null) unix=0 reference=0 error=(null)\nNSURL creation ok=1 value=(null) unix=0 reference=0 error=(null)\nxattr_list_size=62 errno=22\nxattr com.apple.quarantine\nxattr com.apple.lastuseddate#PS\nxattr com.apple.macl\n",
+  "finder_observation_previous_verified_mount": "www.txt Info: Created Monday January 1 2001 08:00; Modified November 17 2026 18:03",
+  "confirmed_chain": [
+    "Phone sends 2026 CaptureDate and DateAdded for both files; neither contains 2001.",
+    "AFT assigns these to POSIX ctime, not independent birth time; guest statx reports no STATX_BTIME.",
+    "NFSv3 fattr3 transmits atime, mtime, ctime only. Apple NFS3 supported attributes omit create time.",
+    "macOS stat birth time is zero; getattrlist returned_common=0x80000c00 omits ATTR_CMN_CRTIME; NSFileManager and NSURL return no creation NSDate.",
+    "www.txt has no xattrs; missing creation date is not an AppleDouble creation timestamp stored for that file."
+  ],
+  "inference": "Finder 2001 display is an absent-date fallback at the presentation layer, matching Apple reference epoch (2001-01-01 00:00 UTC). Exact private Finder code path has not been inspected.",
+  "fix_assessment": "Timezone correction or relabeling POSIX ctime cannot provide birth time through standard NFSv3. Accurate creation-date display needs a transport/metadata path that supports it and trustworthy device creation metadata; no change or fabricated date applied.",
+  "sources": [
+    "https://www.rfc-editor.org/rfc/rfc1813.html",
+    "https://raw.githubusercontent.com/apple-oss-distributions/NFS/main/kext/nfs_vnops.c",
+    "https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/vfs/vfs_vnops.c",
+    "https://developer.apple.com/documentation/foundation/nsdate/datewithtimeintervalsincereferencedate%3A"
+  ],
+  "shutdown": {
+    "time": 1794912801.1291013,
+    "stage": "complete",
+    "driver_exit": 0
+  },
+  "mounted": false
+}

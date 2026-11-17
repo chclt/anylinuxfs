@@ -1,0 +1,48 @@
+{
+  "phase": "read-only preparation completed; no upstream device test yet",
+  "frozen": "frozen-20261113",
+  "current_mount": "self-developed implementation remains mounted; not an upstream result",
+  "constraints": [
+    "Preserve worktree, index and old caches; no automatic commit",
+    "Separate experiment rootfs and build outputs; never install over active helper",
+    "Use original driver source and unpatched dependencies; record any build-only adaptation separately",
+    "Use common NFS export and ordinary forwarding, no MTP-specific relay or global NFS write-window change",
+    "Same Samsung Z Fold 6, USB route, network route and dedicated test data",
+    "No behavioral driver patches; record limitations",
+    "No physical disconnect until user is notified"
+  ],
+  "candidates": [
+    {
+      "name": "jmtpfs",
+      "version": "v0.5",
+      "finding": "README describes whole-file local staging and copy-based rename; FUSE callback table registers flush but no fsync. Confirm actual NFS persistence behavior before accepting writable use."
+    },
+    {
+      "name": "simple-mtpfs",
+      "version": "v0.4.0",
+      "finding": "release uploads modified local temporary file; flush returns success without upload; fsync operates on local descriptor. Cannot assume NFS stable write means device persistence."
+    },
+    {
+      "name": "go-mtpfs",
+      "version": "v1.0.1",
+      "finding": "Android partial IO present; cross-directory Rename returns ENOSYS; Android file Flush ends edit, no explicit Fsync method seen. Check go-fuse NFS export and persistence."
+    },
+    {
+      "name": "android-file-transfer-linux",
+      "version": "v4.6",
+      "finding": "Low-level FUSE partial IO present; no fsync/flush callbacks registered; edit transaction removed on release. Need export capability and NFS COMMIT checks."
+    }
+  ],
+  "stages": [
+    "Isolate rootfs and fixed dependencies, verify pristine source hashes",
+    "Confirm NFS export negotiation/file handles and read-only small and large reads",
+    "Small writes, explicit sync, fresh-session readback, rename/move/replace/delete",
+    "Large sequential copy and complete fresh-session SHA-256",
+    "Finder concurrency, preview, drag, foreground/background",
+    "Normal unmount/direct remount; optional user-operated disconnect only if justified"
+  ],
+  "not_claimed": [
+    "No candidate has passed full Finder+NFS validation",
+    "No candidate excluded from read-only solely for writable sync limitations"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "returncode": 0,
+  "stdout": "[{\"directory\": \"ALFS-Upstream-Sync-128-20261116\", \"deleted\": [\"._sample-128MiB.bin\", \"sample-128MiB.bin\"], \"absent\": true}, {\"directory\": \"ALFS-Upstream-Sync-Full-20261116\", \"deleted\": [\"._large-CHEN.mp4\", \"large-CHEN.mp4\"], \"absent\": true}]\n",
+  "stderr": "",
+  "seconds": 0.31835220899999683
+}

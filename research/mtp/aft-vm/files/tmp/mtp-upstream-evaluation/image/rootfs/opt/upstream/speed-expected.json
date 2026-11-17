@@ -1,0 +1,38 @@
+{
+  "guest-32768.bin": {
+    "size": 134217728,
+    "sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01"
+  },
+  "guest-1048576.bin": {
+    "size": 134217728,
+    "sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01"
+  },
+  "nfs-32768/sample-128MiB.bin": {
+    "size": 134217728,
+    "sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01"
+  },
+  "nfs-1048576/sample-128MiB.bin": {
+    "size": 134217728,
+    "sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01"
+  },
+  "large-131072/sample-128MiB.bin": {
+    "size": 134217728,
+    "sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01"
+  },
+  "large-262144/sample-128MiB.bin": {
+    "size": 134217728,
+    "sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01"
+  },
+  "large-1048576/sample-128MiB.bin": {
+    "size": 134217728,
+    "sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01"
+  },
+  "large-65536/sample-128MiB.bin": {
+    "size": 134217728,
+    "sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01"
+  },
+  "full-1048576/CHEN.mp4": {
+    "size": 478481295,
+    "sha256": "54891e473609cfa199cdee4f6b989a73ad185a73bc664a123600af6a9a2a6cef"
+  }
+}

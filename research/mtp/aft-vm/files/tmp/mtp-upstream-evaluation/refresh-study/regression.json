@@ -1,0 +1,30 @@
+{
+  "started": 1794911218.087436,
+  "directory": "/Users/jike/Developer/chclt/anylinuxfs/tmp/mtp-upstream-evaluation/mount/Internal storage/alfs-refresh-regression-20261117",
+  "steps": [
+    {
+      "step": "write_32MiB",
+      "time": 1794911221.722142,
+      "seconds": 3.397344792028889,
+      "sha256": "00495905420ae650521c75cee0c7bfe7ae8e235fc26ec14e4ce660659845823e"
+    },
+    {
+      "step": "read_32MiB",
+      "time": 1794911221.738383,
+      "seconds": 0.01591354189440608,
+      "sha256": "00495905420ae650521c75cee0c7bfe7ae8e235fc26ec14e4ce660659845823e",
+      "note": "host readback; guest fresh read follows separately"
+    },
+    {
+      "step": "create_pagination_files",
+      "time": 1794911236.402007,
+      "count": 240,
+      "seconds": 14.59595441701822
+    },
+    {
+      "step": "failed",
+      "time": 1794911236.476674,
+      "error": "AssertionError()"
+    }
+  ]
+}

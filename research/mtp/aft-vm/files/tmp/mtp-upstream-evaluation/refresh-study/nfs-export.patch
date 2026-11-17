@@ -1,0 +1,27 @@
+--- a/fuse/fuse.cpp
++++ b/fuse/fuse.cpp
+@@ -528,6 +528,16 @@
+ 		{
+ 			mtp::scoped_mutex_lock l(_mutex);
+ 			FuseEntry entry(req);
++
++			// NFS may resolve an existing file handle after the kernel evicts its inode.
++			// FUSE export lookup uses "." for that inode and ".." for its parent.
++			if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
++			{
++				auto id = strcmp(name, ".") == 0 ? parent : GetParentObject(parent);
++				if (FillEntry(entry, id)) entry.Reply();
++				else entry.ReplyError(ENOENT);
++				return;
++			}
+ 
+ 			const ChildrenObjects & children = GetChildren(parent);
+ 			auto it = children.find(name);
+@@ -884,6 +894,7 @@
+ 		//mtp is completely synchronous. you cannot have two transaction in parallel, so you have to wait any operation to finish before starting another one
+ 
+ 		conn->want &= ~FUSE_CAP_ASYNC_READ;
++		conn->want |= conn->capable & FUSE_CAP_EXPORT_SUPPORT;
+ 		try { g_wrapper->Init(userdata, conn); } catch (const std::exception &ex) { mtp::error("init failed:", ex.what()); }
+ 	}
+ 

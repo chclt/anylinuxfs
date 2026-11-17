@@ -1,0 +1,9 @@
+{
+  "response": {
+    "returncode": 0,
+    "stdout": "{\"empty.bin\": {\"size\": 0, \"sha256\": \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}, \"\\u4e2d\\u6587-small.bin\": {\"size\": 131072, \"sha256\": \"3bcfb99d9c754ca251033df8cd80bf9f6752ff6a67bd53f016b912fe8ae732a3\"}, \"renamed.bin\": {\"size\": 8192, \"sha256\": \"dc404a613fedaeb54034514bc6505f56b933caa5250299ba7d094377a51caa46\"}}\n",
+    "stderr": "",
+    "seconds": 0.11607000000000056
+  },
+  "matches": true
+}

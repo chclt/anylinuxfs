@@ -1,0 +1,4944 @@
+diff --git a/anylinuxfs/src/cmd_mount.rs b/anylinuxfs/src/cmd_mount.rs
+index 29eb51b..c473166 100644
+--- a/anylinuxfs/src/cmd_mount.rs
++++ b/anylinuxfs/src/cmd_mount.rs
+@@ -208,21 +208,21 @@ pub(crate) fn wait_for_proc_exit(pid: libc::pid_t) -> anyhow::Result<()> {
+     wait_for_proc_exit_with_timeout(pid, Duration::from_secs(5))
+ }
+ 
+-fn wait_for_mtp_writeback(
++fn wait_for_mtp_session(
+     cache: &Path,
+     pid: libc::pid_t,
+     seconds: Option<u64>,
+ ) -> anyhow::Result<()> {
+-    // NFS has flushed to the persistent host cache. Only guest shutdown confirms
+-    // that the phone received the files, including after a Finder eject.
+-    println!("Waiting for MTP writeback; keep the device connected...");
++    // NFS has flushed its writes to the phone. Guest shutdown also closes
++    // editing sessions and releases retained objects, including after Finder eject.
++    println!("Waiting for the MTP session to close; keep the device connected...");
+     wait_for_proc_exit_with_timeout(
+         pid,
+         seconds.map(Duration::from_secs).unwrap_or(Duration::MAX),
+     )
+-    .context("Waiting for MTP writeback; keep the device connected")?;
+-    crate::mtp::check_writeback_complete(cache)?;
+-    println!("MTP writeback complete; device can be disconnected");
++    .context("Waiting for the MTP session to close; keep the device connected")?;
++    crate::mtp::check_session_complete(cache)?;
++    println!("MTP session closed; device can be disconnected");
+     Ok(())
+ }
+ 
+@@ -312,7 +312,11 @@ pub(crate) fn validated_mount_point(rt_info: &api::RuntimeInfo) -> MountStatus<'
+         }
+     };
+     let expected_mount_dev = [
+-        rt_info.vm_host.as_slice(),
++        if rt_info.mount_config.mtp.is_some() {
++            crate::mtp_nfs::CLIENT_HOST
++        } else {
++            rt_info.vm_host.as_slice()
++        },
+         b":",
+         expected_mount_point.as_slice(),
+     ]
+@@ -1068,14 +1072,10 @@ impl<'a> NfsShareSetup<'a> {
+         }
+         #[cfg(target_os = "macos")]
+         if config.mtp_device().is_some() {
+-            // jmtpfs downloads the entire file before replying to the first read.
+-            // Keep soft, interruptible requests without declaring that cache fill
+-            // a dead server. User-specified NFS options still take precedence.
+-            nfs_opts.extend([
+-                (b"deadtimeout".into(), b"0".into()),
+-                (b"timeo".into(), b"600".into()),
+-                (b"retrans".into(), b"100".into()),
+-            ]);
++            // Cached metadata has a much shorter RTT than a phone read or a
++            // durable cache write. The adaptive timer can exhaust soft retries
++            // before a queued request is sent. Use the configured timeo instead.
++            nfs_opts.insert(b"dumbtimer".into(), b"".into());
+         }
+         nfs_opts.extend(config.nfs_options.iter().map(|s| match s.split_once('=') {
+             Some((key, value)) => (key.as_bytes().into(), value.as_bytes().into()),
+@@ -1202,6 +1202,17 @@ impl<'a> NfsShareSetup<'a> {
+         device.push(b':');
+         device.extend_from_slice(self.share_path.as_slice());
+         let device_str = String::from_utf8_lossy(&device).into_owned();
++        if self.config.mtp.is_some() {
++            let mounts = fsutil::MountTable::new().context("Read MTP mount table")?;
++            for path in mounts.mount_points() {
++                if mounts.mounted_from(path).context("Read MTP mount source")?
++                    == Path::new(&device_str)
++                {
++                    crate::mtp::force_unmount(path)?;
++                }
++            }
++            return Ok(());
++        }
+         fsutil::cleanup_stale_nfs_client_mount(&device_str)
+     }
+ 
+@@ -1802,7 +1813,7 @@ impl super::AppRunner {
+             // mount: on macOS dropping it would remove the mDNS record, on
+             // Linux it's a no-op marker. See mdns.rs.
+             let (mut registration, vm_host) =
+-                mdns::register_vm_record(&config.vm_hostname, net_helper_svc.vm_host_ip)?;
++                mdns::register_vm_record(&config.vm_hostname, net_helper_svc.vm_host_ip.clone())?;
+ 
+             let vm_host_b = vm_host.to_string().into_bytes();
+ 
+@@ -1978,9 +1989,50 @@ impl super::AppRunner {
+                     rt_info.lock().unwrap().mount_config.mount_options = Some(new_mount_opts);
+                 }
+ 
+-                let nfs_share =
++                let relay = if config.mtp.is_some() {
++                    Some(crate::mtp_nfs::Relay::start(
++                        (net_helper_svc.vm_host_ip.raw_str(), 2049)
++                            .to_socket_addrs()?
++                            .next()
++                            .context("Resolve MTP NFS backend")?,
++                    )?)
++                } else {
++                    None
++                };
++                let mut relay_cleanup = Deferred::new();
++                if let Some(relay) = &relay {
++                    relay_cleanup.add(|| relay.stop());
++                }
++                let mtp_signals = signal_hub.subscribe();
++                let mut nfs_share =
+                     NfsShareSetup::new(&config, &vm_host_b, &mnt_dev_info, shared_volume);
++                if let Some(relay) = &relay {
++                    // mountd and NFS RPCs share this private loopback endpoint;
++                    // control traffic still uses the original VM address.
++                    nfs_share.vm_host_b = crate::mtp_nfs::CLIENT_HOST;
++                    nfs_share.nfs_opts.remove(b"udp".as_slice());
++                    nfs_share.nfs_opts.insert(b"tcp".into(), b"".into());
++                    nfs_share.nfs_opts.insert(b"vers".into(), b"3".into());
++                    nfs_share
++                        .nfs_opts
++                        .insert(b"port".into(), relay.port.to_string().into());
++                    nfs_share
++                        .nfs_opts
++                        .insert(b"mountport".into(), relay.port.to_string().into());
++                    #[cfg(target_os = "linux")]
++                    nfs_share
++                        .nfs_opts
++                        .insert(b"mountproto".into(), b"tcp".into());
++                }
+ 
++                let mut mtp_mount_cleanup = Deferred::new();
++                if relay.is_some() {
++                    mtp_mount_cleanup.add(|| {
++                        if let Err(error) = nfs_share.force_umount_if_mounted() {
++                            host_eprintln!("Clean up MTP NFS mount: {:#}", error);
++                        }
++                    });
++                }
+                 let mount_result = nfs_share.mount();
+                 match &mount_result {
+                     Ok(_) => host_println!("Requested NFS share mount"),
+@@ -1996,9 +2048,16 @@ impl super::AppRunner {
+                 };
+ 
+                 let mount_point_opt = if mount_result.is_ok() {
+-                    let nfs_path =
+-                        PathBuf::from(format!("{}:{}", vm_host_b.as_bstr(), nfs_share.share_path));
+-                    event_session.wait_for_mount(&nfs_path)
++                    let nfs_path = PathBuf::from(format!(
++                        "{}:{}",
++                        nfs_share.vm_host_b.as_bstr(),
++                        nfs_share.share_path
++                    ));
++                    if let Some(relay) = &relay {
++                        Some(crate::mtp::wait_for_mount(&nfs_path, relay, &mtp_signals)?)
++                    } else {
++                        event_session.wait_for_mount(&nfs_path)
++                    }
+                 } else {
+                     None
+                 };
+@@ -2060,7 +2119,22 @@ impl super::AppRunner {
+                 }
+ 
+                 if let Some(mount_point) = &mount_point_opt {
+-                    event_session.wait_for_unmount(mount_point.real());
++                    if let (Some(relay), Some(mtp)) = (&relay, &config.mtp) {
++                        let source = PathBuf::from(format!(
++                            "{}:{}",
++                            nfs_share.vm_host_b.as_bstr(),
++                            nfs_share.share_path
++                        ));
++                        crate::mtp::wait_for_unmount(
++                            Path::new(mount_point.display()),
++                            &source,
++                            &mtp.cache_path,
++                            relay,
++                            &mtp_signals,
++                        )?;
++                    } else {
++                        event_session.wait_for_unmount(mount_point.real());
++                    }
+                     host_println!("Share {} was unmounted", mount_point.display());
+                 }
+                 deferred.remove(quit_action);
+@@ -2159,7 +2233,7 @@ impl super::AppRunner {
+                 MountStatus::Mounted(mount_point) => mount_point,
+                 MountStatus::NoLonger => {
+                     if let Some(mtp) = &rt_info.mount_config.mtp {
+-                        wait_for_mtp_writeback(
++                        wait_for_mtp_session(
+                             &mtp.cache_path,
+                             rt_info.session_pgid,
+                             cmd.wait_for_vm,
+@@ -2201,7 +2275,7 @@ impl super::AppRunner {
+             fsutil::unmount_nfs_subdirs(our_mount_points, &mount_point)?;
+ 
+             if let Some(mtp) = &rt_info.mount_config.mtp {
+-                wait_for_mtp_writeback(&mtp.cache_path, rt_info.session_pgid, cmd.wait_for_vm)?;
++                wait_for_mtp_session(&mtp.cache_path, rt_info.session_pgid, cmd.wait_for_vm)?;
+             } else if let Some(wait_secs) = cmd.wait_for_vm {
+                 wait_for_proc_exit_with_timeout(
+                     rt_info.session_pgid,
+diff --git a/anylinuxfs/src/diskutil/darwin.rs b/anylinuxfs/src/diskutil/darwin.rs
+index aecbd63..81d2b1e 100644
+--- a/anylinuxfs/src/diskutil/darwin.rs
++++ b/anylinuxfs/src/diskutil/darwin.rs
+@@ -1,6 +1,6 @@
+ use anyhow::Context;
+ use bstr::BStr;
+-use common_utils::host_println;
++use common_utils::{Deferred, host_println};
+ use objc2_core_foundation::{
+     CFBoolean, CFDictionary, CFRetained, CFRunLoop, CFString, CFURL, kCFRunLoopDefaultMode,
+ };
+@@ -15,7 +15,7 @@ use std::ffi::{CString, c_void};
+ use std::marker::PhantomData;
+ use std::path::Path;
+ use std::process::Command;
+-use std::ptr::{NonNull, null_mut};
++use std::ptr::NonNull;
+ use std::thread;
+ use url::Url;
+ 
+@@ -333,6 +333,17 @@ impl EventSession {
+             )
+         };
+ 
++        // Disk Arbitration matches both callback and context. Unregister before
++        // the stack context goes away, or a later disk event can use freed data.
++        let mut unregister = Deferred::new();
++        unregister.add(|| unsafe {
++            DAUnregisterCallback(
++                &self.session,
++                NonNull::new_unchecked(disk_mount_event as *mut c_void),
++                mount_ctx_ptr.cast(),
++            );
++        });
++
+         unsafe {
+             DASession::schedule_with_run_loop(
+                 &self.session,
+@@ -343,9 +354,7 @@ impl EventSession {
+ 
+         CFRunLoop::run();
+ 
+-        let callback_ptr = disk_mount_event as *const c_void as *mut c_void;
+-        let callback_nonnull: NonNull<c_void> = NonNull::new(callback_ptr).unwrap();
+-        unsafe { DAUnregisterCallback(&self.session, callback_nonnull, null_mut()) };
++        drop(unregister);
+ 
+         mount_ctx.real_mount_point.map(MountPoint::new)
+     }
+@@ -362,6 +371,17 @@ impl EventSession {
+             )
+         };
+ 
++        // Disk Arbitration matches both callback and context. Unregister before
++        // the stack context goes away, or a later disk event can use freed data.
++        let mut unregister = Deferred::new();
++        unregister.add(|| unsafe {
++            DAUnregisterCallback(
++                &self.session,
++                NonNull::new_unchecked(disk_unmount_event as *mut c_void),
++                mount_ctx_ptr.cast(),
++            );
++        });
++
+         unsafe {
+             DASession::schedule_with_run_loop(
+                 &self.session,
+@@ -372,9 +392,7 @@ impl EventSession {
+ 
+         CFRunLoop::run();
+ 
+-        let callback_ptr = disk_unmount_event as *const c_void as *mut c_void;
+-        let callback_nonnull: NonNull<c_void> = NonNull::new(callback_ptr).unwrap();
+-        unsafe { DAUnregisterCallback(&self.session, callback_nonnull, null_mut()) };
++        drop(unregister);
+     }
+ }
+ 
+diff --git a/anylinuxfs/src/fsutil.rs b/anylinuxfs/src/fsutil.rs
+index f48af9b..3fc19f6 100644
+--- a/anylinuxfs/src/fsutil.rs
++++ b/anylinuxfs/src/fsutil.rs
+@@ -132,7 +132,7 @@ impl Default for NfsOptions {
+             // notices a registry entry stuck for 60s.
+             opts.insert("soft".into(), "".into());
+             opts.insert("intr".into(), "".into());
+-            opts.insert("timeo".into(), "100".into()); // tenths of a second → 10s per try
++            opts.insert("timeo".into(), "100".into()); // initial timeout, in tenths of a second
+             opts.insert("retrans".into(), "3".into());
+         }
+         opts.insert(LOCAL_LOCK_KEY.into(), LOCAL_LOCK_VALUE.into());
+diff --git a/anylinuxfs/src/main.rs b/anylinuxfs/src/main.rs
+index 40b0a27..bb8b8d1 100644
+--- a/anylinuxfs/src/main.rs
++++ b/anylinuxfs/src/main.rs
+@@ -34,6 +34,7 @@ mod diskutil;
+ mod fsutil;
+ mod mdns;
+ mod mtp;
++mod mtp_nfs;
+ mod netutil;
+ mod privilege;
+ mod pubsub;
+@@ -1153,7 +1154,7 @@ impl AppRunner {
+                 MountStatus::NoLonger => {
+                     if let Some(mtp) = &rt_info.mount_config.mtp {
+                         status_list.push(format!(
+-                            "{} is finishing MTP writeback; keep the device connected (cache: {})",
++                            "{} is closing the MTP session; keep the device connected (cache: {})",
+                             rt_info.mount_config.disk_path,
+                             mtp.cache_path.display()
+                         ));
+@@ -1207,7 +1208,7 @@ impl AppRunner {
+             );
+             if let Some(mtp) = &rt_info.mount_config.mtp {
+                 status.push('\n');
+-                status.push_str(&crate::mtp::writeback_status(&mtp.cache_path)?);
++                status.push_str(&crate::mtp::session_status(&mtp.cache_path)?);
+             }
+             status_list.push(status);
+         }
+diff --git a/anylinuxfs/src/mtp.rs b/anylinuxfs/src/mtp.rs
+index 7fd708c..0bf1c5e 100644
+--- a/anylinuxfs/src/mtp.rs
++++ b/anylinuxfs/src/mtp.rs
+@@ -1,13 +1,20 @@
+-//! Host resources for an MTP mount. USB forwarding has its own lifecycle.
++//! Mount-local MTP read cache and diagnostic lifetime. No background uploads.
+ use anyhow::Context;
+ use common_utils::{Deferred, host_eprintln};
+-use std::{ffi::OsStr, fs, io, os::unix::fs::DirBuilderExt, path::Path};
++use std::{fs, io, os::unix::fs::DirBuilderExt, path::Path};
+ 
+ use crate::{
+     privilege,
+     settings::{Config, MtpConfig},
++    utils::{AcquireLock, FlockKind},
+ };
+ 
++#[derive(serde::Deserialize)]
++struct Status {
++    state: String,
++    error: String,
++}
++
+ pub(crate) fn prepare_cache(
+     config: &Config,
+     mtp: &MtpConfig,
+@@ -19,21 +26,33 @@ pub(crate) fn prepare_cache(
+         .mode(0o700)
+         .recursive(true)
+         .create(&parent)
+-        .context("Create persistent MTP cache directory")?;
++        .context("Create MTP session directory")?;
+     privilege::chown_to_invoker(
+         &parent,
+         config.privilege.invoker_uid,
+         config.privilege.invoker_gid,
+     )?;
++    // Always use a fresh directory. Old writeback caches may contain the only
++    // copy of user data; this implementation neither opens nor deletes them.
+     fs::DirBuilder::new()
+         .mode(0o700)
+         .create(cache)
+-        .context("Create MTP disk cache")?;
++        .context("Create MTP read cache")?;
++    let lock = fs::OpenOptions::new()
++        .create(true)
++        .truncate(false)
++        .read(true)
++        .write(true)
++        .open(cache.join("host.lock"))
++        .context("Open MTP cache lock")?
++        .acquire_lock(FlockKind::Exclusive)
++        .context("MTP cache is already in use")?;
++    deferred.add(move || drop(lock));
+     deferred.add({
+         let cache = cache.clone();
+         move || {
+             if let Err(error) = cleanup_cache(&cache) {
+-                host_eprintln!("Remove MTP disk cache {}: {}", cache.display(), error);
++                host_eprintln!("Remove MTP cache {}: {}", cache.display(), error);
+             }
+         }
+     });
+@@ -42,78 +61,162 @@ pub(crate) fn prepare_cache(
+         config.privilege.invoker_uid,
+         config.privilege.invoker_gid,
+     )?;
+-    // The guest fsyncs data and journals through virtiofs. Persist the session
+-    // directory too, so acknowledged writes remain recoverable after a reboot.
+-    fs::File::open(&parent)
+-        .context("Open MTP cache directory")?
+-        .sync_all()
+-        .context("Persist MTP cache directory")?;
+-    fs::File::open(&config.paths.profile_path)
+-        .context("Open MTP profile directory")?
+-        .sync_all()
+-        .context("Persist MTP cache parent")?;
+     Ok(())
+ }
+ 
+-fn needs_recovery(cache: &Path) -> anyhow::Result<bool> {
+-    let writeback = cache.join(common_utils::MTP_WRITEBACK_DIR);
+-    match fs::read_dir(&writeback) {
+-        Ok(entries) => {
+-            for entry in entries {
+-                let path = entry.context("Read MTP writeback entry")?.path();
+-                if path.file_name() == Some(OsStr::new("session.pending"))
+-                    || matches!(path.extension(), Some(extension) if extension == OsStr::new("record") || extension == OsStr::new("next"))
+-                {
+-                    return Ok(true);
+-                }
+-            }
+-        }
+-        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+-        Err(error) => return Err(error).context("Read MTP writeback directory"),
++fn read_status(cache: &Path) -> anyhow::Result<Status> {
++    let path = cache
++        .join(common_utils::MTP_SESSION_DIR)
++        .join("status.json");
++    let content = fs::read(&path).context("Read MTP session status")?;
++    serde_json::from_slice(&content).context("Parse MTP session status")
++}
++
++pub(crate) fn check_session_complete(cache: &Path) -> anyhow::Result<()> {
++    // Successful daemon cleanup may have removed the session before the
++    // unmount command finishes waiting for its process to exit.
++    if !cache.try_exists().context("Check MTP session directory")? {
++        return Ok(());
+     }
+-    Ok(false)
++    anyhow::ensure!(
++        !cache.join("session.error").exists(),
++        "MTP session failed; diagnostics retained at {}",
++        cache.display()
++    );
++    let status = read_status(cache)?;
++    anyhow::ensure!(
++        status.state == "complete"
++            && !cache
++                .join(common_utils::MTP_SESSION_DIR)
++                .join("session.pending")
++                .exists(),
++        "MTP session did not finish cleanly: {}; diagnostics retained at {}. Incomplete copies must be copied again",
++        status.error,
++        cache.display()
++    );
++    Ok(())
+ }
+ 
+ pub(crate) fn cleanup_cache(cache: &Path) -> anyhow::Result<()> {
+-    if needs_recovery(cache)? {
+-        host_eprintln!(
+-            "MTP writeback incomplete; recover files from {}",
+-            cache.display()
+-        );
++    if !cache.try_exists().context("Check MTP cache directory")? {
++        return Ok(());
++    }
++    // Only an explicitly completed new session is disposable. This also keeps
++    // older cache formats intact without keeping their recovery implementation.
++    if check_session_complete(cache).is_err() {
++        host_eprintln!("MTP session data retained at {}", cache.display());
+         return Ok(());
+     }
+     match fs::remove_dir_all(cache) {
+         Ok(()) => Ok(()),
+         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+-        Err(error) => Err(error).context("Remove MTP cache"),
++        Err(error) => Err(error).context("Remove MTP read cache"),
+     }
+ }
+ 
+-pub(crate) fn check_writeback_complete(cache: &Path) -> anyhow::Result<()> {
+-    if needs_recovery(cache)? {
+-        anyhow::bail!(
+-            "MTP writeback did not complete; local data retained at {}",
+-            cache.display()
++pub(crate) fn session_status(cache: &Path) -> anyhow::Result<String> {
++    let status = read_status(cache)?;
++    Ok(format!(
++        "  MTP: {}; session: {}{}",
++        status.state,
++        cache.display(),
++        if status.error.is_empty() {
++            String::new()
++        } else {
++            format!("\n  MTP error: {}", status.error)
++        }
++    ))
++}
++
++pub(crate) fn wait_for_mount(
++    source: &Path,
++    relay: &crate::mtp_nfs::Relay,
++    signals: &crate::pubsub::Subscription<libc::c_int>,
++) -> anyhow::Result<crate::diskutil::MountPoint> {
++    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
++    loop {
++        if let Some(error) = relay.failure()? {
++            anyhow::bail!("MTP NFS mount failed: {error}");
++        }
++        anyhow::ensure!(signals.try_recv().is_err(), "MTP mount interrupted");
++        let mounts = crate::fsutil::MountTable::new().context("Read mount table")?;
++        for path in mounts.mount_points() {
++            if mounts.mounted_from(path).context("Read NFS mount source")? == source {
++                return Ok(crate::diskutil::MountPoint::new(
++                    path.to_string_lossy().into_owned(),
++                ));
++            }
++        }
++        anyhow::ensure!(
++            std::time::Instant::now() < deadline,
++            "MTP NFS mount did not appear"
+         );
++        std::thread::sleep(std::time::Duration::from_millis(100));
+     }
+-    Ok(())
+ }
+ 
+-pub(crate) fn writeback_status(cache: &Path) -> anyhow::Result<String> {
+-    #[derive(serde::Deserialize)]
+-    struct Status {
+-        pending: u64,
+-        failed: u64,
++pub(crate) fn wait_for_unmount(
++    mount_point: &Path,
++    source: &Path,
++    cache: &Path,
++    relay: &crate::mtp_nfs::Relay,
++    signals: &crate::pubsub::Subscription<libc::c_int>,
++) -> anyhow::Result<()> {
++    loop {
++        let mounts = crate::fsutil::MountTable::new().context("Read MTP mount table")?;
++        // A Finder eject may close TCP before notifying the daemon. Classify it
++        // from the kernel mount table, without issuing an RPC to the phone.
++        if !mounts.is_mounted(source) {
++            return Ok(());
++        }
++        let error = if let Some(error) = relay.failure()? {
++            Some(error)
++        } else {
++            let status = read_status(cache)?;
++            (status.state == "failed").then_some(status.error)
++        };
++        if let Some(error) = error {
++            fs::write(cache.join("session.error"), &error).context("Preserve MTP failure")?;
++            host_eprintln!(
++                "MTP session failed: {}; unmounting {}",
++                error,
++                mount_point.display()
++            );
++            force_unmount(mount_point)?;
++            anyhow::bail!("MTP session failed: {error}; incomplete copies must be copied again");
++        }
++        if signals.try_recv().is_ok() {
++            crate::fsutil::unmount_nfs_subdirs(
++                std::iter::once(mount_point.as_os_str()),
++                mount_point,
++            )?;
++            return Ok(());
++        }
++        std::thread::sleep(std::time::Duration::from_millis(100));
+     }
+-    let path = cache
+-        .join(common_utils::MTP_WRITEBACK_DIR)
+-        .join("status.json");
+-    let content = fs::read(&path).context("Read MTP writeback status")?;
+-    let status: Status = serde_json::from_slice(&content).context("Parse MTP writeback status")?;
+-    Ok(format!(
+-        "  MTP writeback: {} pending, {} failed; cache: {}",
+-        status.pending,
+-        status.failed,
+-        cache.display()
+-    ))
++}
++
++pub(crate) fn force_unmount(path: &Path) -> anyhow::Result<()> {
++    #[cfg(target_os = "macos")]
++    let mut command = {
++        let mut c = std::process::Command::new("/usr/sbin/diskutil");
++        c.args(["unmount", "force"]);
++        c
++    };
++    #[cfg(target_os = "linux")]
++    let mut command = {
++        let mut c = std::process::Command::new("umount");
++        c.arg("-f");
++        c
++    };
++    let status = command
++        .arg(path)
++        .status()
++        .context("Unmount failed MTP NFS volume")?;
++    anyhow::ensure!(
++        status.success(),
++        "Could not unmount failed MTP volume {}: {status}",
++        path.display()
++    );
++    Ok(())
+ }
+diff --git a/common-utils/src/lib.rs b/common-utils/src/lib.rs
+index f776e03..6daec6b 100644
+--- a/common-utils/src/lib.rs
++++ b/common-utils/src/lib.rs
+@@ -18,7 +18,7 @@ pub const VM_IP: &str = "192.168.127.2";
+ pub const VM_CTRL_PORT: u16 = 7350;
+ pub const USBIP_VSOCK_PORT: u32 = 12701;
+ pub const MTP_CACHE_TAG: &std::ffi::CStr = c"alfs-mtp-cache";
+-pub const MTP_WRITEBACK_DIR: &str = "mtp-writeback";
++pub const MTP_SESSION_DIR: &str = "mtp-session";
+ pub const VMNET_PREFIX_LEN: u8 = 30;
+ pub const TELNET_AUTH_DOMAIN: &[u8] = b"anylinuxfs/telnet-auth/v1\0";
+ 
+diff --git a/docs/building.md b/docs/building.md
+index c9ef1eb..14d5366 100644
+--- a/docs/building.md
++++ b/docs/building.md
+@@ -110,7 +110,7 @@ bin/anylinuxfs unmount mtp:BUS_ID --wait-for-vm
+ 
+ Use the current bus ID of an unlocked device in file-transfer/MTP mode. This
+ source selects a Linux guest and skips block-device discovery, decryption and
+-volume management. It mounts through jmtpfs and uses the existing NFS export,
++volume management. It mounts through the first-party MTP helper and uses the existing NFS export,
+ status, unmount and stop commands. Mounts default to read-only; `-o rw` explicitly
+ enables experimental writes. Only `ro` and `rw` mount options are accepted.
+ The chosen mode applies to FUSE, the NFS export and the macOS mount, including
+@@ -130,172 +130,89 @@ Prepare these experimental guest assets before mounting:
+   `arch/arm64/boot/Image` at `libexec/Image-usbip`. A build using the 4K-page base
+   config goes at `libexec/Image-usbip-4K` and is selected by
+   `--kernel-page-size 4k`. Ordinary disk mounts still use the bundled kernels.
+-- First run `bin/anylinuxfs shell --command 'true'` to initialize or update the
+-  Alpine rootfs to the current version. Then copy `scripts/prepare-mtp-guest.sh`
+-  and `scripts/jmtpfs-stable-files.patch`, `scripts/jmtpfs-writeback.patch`,
+-  `scripts/jmtpfs-file-operations.patch`, `scripts/jmtpfs-directory-transactions.patch`,
+-  `scripts/jmtpfs-writeback-queue.patch`, `scripts/jmtpfs-events.patch`,
+-  `scripts/libmtp-bounded-events.patch`, `scripts/libmtp-close-timeout.patch`
+-  and `scripts/jmtpfs-fuse-open-handles.patch`
+-  into the same directory in that rootfs
+-  and run `bin/anylinuxfs shell --rw-rootfs --command
+-  'sh /prepare-mtp-guest.sh'`. It builds a pinned, checksum-verified
+-  jmtpfs revision and installs its Linux runtime libraries and license. The patched
+-  executable is installed at `/usr/local/libexec/anylinuxfs/jmtpfs-writeback`.
+-  The guest requires that exact helper; rerun preparation when updating it. A rootfs
+-  reinitialization removes this optional helper, so prepare it again afterwards.
+-
+-The patch gives each FUSE open a stable file handle. Opens of the same file share
+-one local copy, including when an upload changes its remote object ID. `fsync`
+-and `flush` persist that copy to the host disk. NFS COMMIT can occur many times
+-during a copy and does not mean the file is complete, so neither callback uploads
+-the file. A single writeback worker publishes files after two seconds without a
+-write. It uploads a separate durable snapshot while FUSE continues serving cached
+-reads, writes and attributes under per-file locks. A version counter keeps writes
+-made during upload pending for the next publication. Remote namespace transactions
+-remain serialized with uploads; cold reads and directory operations can still wait
+-for USB, including parent-directory resolution for path-based queries. A long
+-upload can still cause an NFS timeout on a new namespace operation.
+-Release only releases the open handle; dirty copies
+-remain owned by the cache until publication. Creation and rename still publish
+-their namespace transactions synchronously. Clean local copies remain cached while
+-writebacks are pending, because NFS can release FUSE handles between requests
+-even while the Mac keeps the file open. Idle copies are reclaimed when the queue
+-is empty.
+-
+-Copy completion means the data is saved on the Mac, not necessarily on the phone.
+-`anylinuxfs status` shows pending and failed writebacks. Use
+-`anylinuxfs unmount mtp:BUS_ID` and wait for the safe-disconnection message before
+-unplugging. Normal unmount stops NFS, drains pending uploads, then closes MTP and
+-releases USB; it has no five-second upload deadline. An explicit `--wait-for-vm N`
+-limits the CLI wait without killing the transfer. Finder eject alone may return
+-while the VM is still draining; keep the phone connected until the session exits.
+-The pending count is a snapshot, not a substitute for normal unmount.
+-
+-The writeback patch stores named copies and recovery records
+-in `mtp-writeback` inside the VM's private cache. It uploads a temporary object,
+-renames the old object to a backup, publishes the replacement and only then deletes
+-the backup. A failed or interrupted operation retains its data and phase record;
+-repeated sync calls do not restart an uncertain replacement. This sequence does
+-not provide atomic replacement against other clients of the phone. Missing
+-filename-property support returns an unsupported-operation error. Upload preparation
+-determines the content's file type before capability checks. Writeback checks that
+-type and the existing destination's type before uploading or renaming any object;
+-the upload step does not change the prepared type. The device layer reads back the
+-complete uploaded metadata; successful writeback caches that snapshot rather than
+-the upload parameters, which libmtp does not fully populate.
+-Creation and file rename use the same writeback record. A rename publishes the
+-replacement before removing its source, and backs up an existing destination
+-before replacing it. Rename preflight leaves the source unchanged on failure;
+-namespace intent is never stored as a retryable content write. The helper disables
+-libfuse hidden renames and owns open-file removal itself. Unlinked or overwritten
+-open files keep their metadata and contents in the shared local copy until the
+-last handle closes; writes and sync on those handles never recreate a phone object.
+-An uncertain destination removal retains its recovery record and blocks writeback.
+-The helper statically links a pinned libfuse 2.9.9 with a private open-handle patch.
+-Linux can request attributes of an unlinked open inode without a file handle;
+-the patch pins a remaining open handle until the attribute callback returns, so
+-concurrent release cannot free it. The helper uses multithreaded FUSE dispatch
+-and leaves the guest's system FUSE library unchanged.
+-Append and truncate operate on the shared local copy. Cross-storage renames return
+-`EXDEV`. Directory rename and move use native MTP operations, preserving child
+-object IDs. Moving and renaming a directory together stages it under a unique
+-name to avoid collisions in the new parent. Replacing an empty directory first
+-backs it up and removes that backup only after publication. These multi-step
+-operations have independent recovery records and block further mutations of
+-affected directories after an uncertain result. Record persistence is shared
+-with file writeback; directory transactions do not use file-content caches.
+-The MTP adapter passes an explicit storage-root destination to libmtp, avoiding
+-its automatic media-folder selection for a zero parent ID.
+-Unsupported native move/filename capabilities are rejected before mutation.
+-Nonempty directory targets return `ENOTEMPTY`.
+-
+-All MTP software runs in Linux; no host MTP package is needed. Opening an existing
+-file fetches metadata only. Reads fill a sparse local cache in 1 MiB blocks using
+-libmtp partial-object requests, including completion of legitimate short reads.
+-There is no whole-file-read fallback. Changing existing content or publishing a
+-rename first materializes the bytes needed by the local replacement; truncating
+-to zero discards the old content without downloading it. Removing an open file
+-preserves its data for existing handles before deleting the remote object.
+-Directory attribute queries fetch only the directory metadata, not its children.
+-Capacity queries use the latest storage-discovery snapshot without waiting for
+-USB; free-space figures refresh when storage discovery runs again.
+-Each MTP VM receives a private disk
+-cache at `~/.anylinuxfs/mtp-cache/<id>` through an independent writable virtiofs mount;
+-its rootfs stays read-only. Guest writable-directory initialization selects that cache for `/tmp` before
+-network and NFS setup, because musl's `tmpfile()` does not honor `TMPDIR`. This keeps large files out of guest RAM.
+-The cache contains temporary plaintext copies and needs enough host disk space
+-for the active cached files plus one upload snapshot. Creating the recovery directory also
+-syncs its parent so durable data and records remain reachable after a host crash.
+-After VM exit, including startup failure and force stop, the
+-host removes it only when no recovery records or incomplete-session marker remain.
+-A failed background upload returns I/O errors on subsequent writes/syncs of that
+-file and is not retried automatically. Normal unmount reports failure if recovery
+-is needed. In that case the host reports the path and preserves the cache across
+-reboots. Records contain the source, target and replacement IDs,
+-storage and parent IDs, operation and phase, and hex-encoded source/target/staging names.
+-File data shares its record's basename. Directory records carry object IDs and
+-names without a data copy. Recovery is manual in this phase.
+-The tested phone reassigned object IDs after USB reconnection. Resolve current
+-objects using the exact recorded names and device metadata during recovery;
+-recorded IDs describe the interrupted session and must not be replayed blindly.
+-An abrupt host crash can also leave the directory behind.
+-
+-A separate writable guest mount was checked with the Android phone (18d1:4ee2,
+-MTP+ADB), which reported support for object moves and filename properties.
+-Creation, overwrite, append, truncate, file rename/replacement, open-file unlink
+-and replacement, directory move/rename and empty-directory replacement passed.
+-A 557,056-byte file was closed, downloaded again and compared byte for byte.
+-For the disconnect check, a temporary diagnostic paused writeback after upload,
+-before backing up the original test file. Physical USB unplug then made sync
+-return `EIO`; the local replacement and phase record remained intact. After
+-reconnection the original file's contents were unchanged. The precise temporary
+-object name was also checked by creating it and reopening the MTP session; its
+-contents matched. These checks used a dedicated temporary phone directory,
+-which was removed afterwards.
+-
+-The formal macOS NFS path was also checked as the invoking user, without
+-`--ignore-permissions`. File creation, overwrite, append, truncate, rename,
+-replacement and open-file unlink/replacement passed, along with directory
+-move/rename and empty-directory replacement. After normal unmount and startup
+-of a new VM, five files (including a 720,896-byte payload and a file written by
+-ordinary close without explicit sync) matched their expected SHA-256 hashes.
+-The dedicated phone directory was removed. Stopping USB forwarding made a
+-directory read return `EIO`; normal unmount then removed the VM, helper processes,
+-sockets and cache. Explicit `-o rw` also stayed consistent across FUSE and both
+-NFS layers when their overrides requested `ro`.
+-
+-On macOS, MTP mounts keep soft, interruptible NFS requests but default to
+-`deadtimeout=0,timeo=600,retrans=100`. Ordinary disk mounts keep their existing
+-timeout options. `--nfs-options` can override these waiting options. These are
+-waiting policies, not a substitute for bounded reads. A long USB upload or
+-namespace transaction can still delay uncached operations and cause macOS to
+-report an interrupted server connection.
+-
+-The 16K kernel and guest path have been checked with a simulated USB/IP MTP
+-device and an Android phone (18d1:4ee2, MTP+ADB), including enumeration, NFS
+-directory access, repeated file reads (2.3 MiB and 32 MiB), read-only write
+-rejection and normal shutdown. Reads up to 87 MiB also completed. The phone
+-passed 12 native interrupt-transfer cancellations and disconnecting the USB/IP
+-client with a pending transfer.
+-Physical unplug during file access returned an I/O error, and the CLI then
+-unmounted normally and cleaned up the VM, helpers, sockets and cache. Reconnecting
+-the phone restored mounting and file reads, with the same file checksum.
+-Mount status uses the kernel's mount table so a disconnected NFS share is still
+-recognized without accessing the filesystem. Without `-o rw`, an explicit `rw`
+-NFS export override still produced a read-only mount. A 6 GiB file was read twice
+-with a 512 MiB guest, producing identical SHA-256 hashes. After waking the USB event
+-thread on newly received requests, its cache download averaged about 18 MiB/s,
+-up from about 2.5 MiB/s. The first complete read took 357 seconds and the second
+-14 seconds. This remains below the user's reported native 25 MB/s; the remaining
+-throughput difference has not been isolated. Other phone models still need
+-device testing. USB detach or device locks can cause I/O errors; unmount before
+-disconnecting. Writable mounts are experimental; recovery remains manual and
+-MTP replacement is not atomic against other clients.
+-
+-
+-The host resolves MTP options after merging command arguments and environment
+-variables. USB forwarding owns only its helper and socket; mount preparation owns
+-the MTP cache, and VM preparation selects the kernel once after device metadata
+-and the guest OS are known. The guest keeps disk and MTP lifecycles separate and
+-passes their mounted paths and effective permissions to common NFS export setup.
++- First run `bin/anylinuxfs shell --command 'true'` to initialize or update
++  Alpine. Copy `mtpfs/`, `LICENSE`, and `scripts/prepare-mtp-guest.sh` with
++  `scripts/libmtp-bounded-events.patch`, `scripts/libmtp-close-timeout.patch`,
++  `scripts/libmtp-response-status.patch`,
++  and `scripts/jmtpfs-fuse-open-handles.patch` into a directory in that rootfs,
++  preserving the repository layout. For example, use `/opt/anylinuxfs-source`.
++  Run `bin/anylinuxfs shell --rw-rootfs --command
++  'sh /opt/anylinuxfs-source/scripts/prepare-mtp-guest.sh'`.
++  This builds the first-party C++ helper and checksum-verified private libmtp
++  1.1.22 and libfuse 2.9.9 dependencies. The guest requires
++  `/usr/local/libexec/anylinuxfs/mtpfs`. Re-run preparation after source updates
++  or rootfs reinitialization. `build-app.sh` builds the host and VM components;
++  it does not build this optional guest helper.
++
++### MTP direct writes
++
++The helper keeps a session-local namespace, a sparse read cache, and one MTP
++transport owner. Each write waits for the phone to acknowledge its bytes;
++`fsync` and NFS COMMIT finish the object's MTP editing session. There is no
++background whole-file publisher, quiet-period snapshot, or automatic upload
++replay. A buffered client write alone is not a completed copy: applications
++must check their final synchronization result and unmount before disconnecting.
++
++FUSE uses cached write-through with big writes, not FUSE writeback caching or
++per-file direct I/O. USB requests are bounded to 1 MiB. NFS can deliver writes
++out of order; the helper extends the remote object before writing beyond EOF.
++Cached attributes do not wait for unrelated file I/O. Opening, renaming, or
++deleting a file does not download the whole file.
++
++Each host mount has a private loopback RPC endpoint. It routes mountd calls and
++limits NFSv3 to four outstanding writes and eight total requests across its
++connections. Pending payloads share a 16 MiB budget; connection count, framing
++buffers and request count are also bounded. A read burst quota allows waiting
++mutations to progress. Explicit file-handle barriers order related RPCs, while
++namespace consistency remains the filesystem's responsibility. This does not
++change the system-wide NFS write limit. The normal NFS timeout settings remain
++in effect; longer waits are not used as a throughput fix.
++
++A lost TCP connection after a dispatched mutation ends the session. The relay
++never recreates that backend connection or retries a possibly completed
++operation. The host checks the kernel mount table to distinguish Finder eject
++from an unexpected failure, unmounts a failed volume, and preserves diagnostics.
++Unmodified mount probes and read-only connections may close normally.
++
++Replacement rename retains the old target under a unique non-hidden
++`ALFS-retained-<uuid>` name before renaming the source. When native moves are
++available, retained objects move into a session-owned `ALFS-open-<uuid>` directory
++at the storage root, so they do not prevent removing the former user directory.
++Without native moves, a directory containing retained open objects remains
++nonempty until those handles close. Open handles continue using the old object
++until release. Cross-directory moves use a unique
++`ALFS-moving-<uuid>` intermediate name to avoid collisions. Namespace changes
++are published locally only after the MTP operations succeed. An uncertain
++partial operation stops the session and retains a small diagnostic record;
++there is no blind rollback or startup replay. MTP replacement is not atomic
++against phone-side applications or physical disconnects. A failed operation
++may leave a retained/intermediate object that needs manual inspection.
++
++Unlink keeps an open object's remote identity until the final handle closes.
++Cross-storage rename returns `EXDEV`; unsupported native moves return
++`EOPNOTSUPP`. Nonempty directory replacement/deletion is rejected. AppleDouble
++sidecars and `.DS_Store` are local to the mount; NFS-generated `.nfs` names are
++real remote objects. Moving between a local sidecar and a remote object is
++unsupported. Unix modes and timestamps are mount-local metadata: updates are
++visible in this mount, but remounting reloads the phone's timestamps. Samsung
++rejects DateModified updates with response A80A; the helper does not issue that
++unsupported property command or claim that these attributes persist on the phone.
++
++Use `anylinuxfs unmount mtp:BUS_ID` and wait for session shutdown before
++unplugging. After an interrupted upload, the phone can contain a partial file;
++reconnect, remount, and explicitly copy it again from the original source.
++`--mtp-recover` has been removed. Old caches are never opened, migrated, replayed,
++or automatically removed by the new helper. Preserve them for recovery with
++the version that created them if they contain pending user data.
++
++The session directory under `~/.anylinuxfs/mtp-cache/` contains plaintext read
++cache data and diagnostics, exported through private virtiofs. It is removed
++only after a clean session completes. It is not a complete source-file snapshot
++or a backup. Protocol acknowledgement is not a claim of physical power-loss
++durability on the phone. Keep file changes within this mount while it is active.
++
++The private libmtp response-status patch distinguishes complete protocol
++rejections from transport failures. Repeated handles in Samsung listings are
++deduplicated at the transport boundary; duplicate names remain an error. The
++bounded event reader and session-close fix for Harmony, and the private libfuse
++open-handle fix, remain in use. None replaces the system library.
+diff --git a/scripts/jmtpfs-directory-transactions.patch b/scripts/jmtpfs-directory-transactions.patch
+deleted file mode 100644
+index d18ce26..0000000
+--- a/scripts/jmtpfs-directory-transactions.patch
++++ /dev/null
+@@ -1,703 +0,0 @@
+---- a/src/Makefile.am
+-+++ b/src/Makefile.am
+-@@ -2,6 +2,6 @@
+- jmtpfs_SOURCES=jmtpfs.cpp MtpDevice.cpp ConnectedMtpDevices.cpp Mutex.cpp MtpFilesystemPath.cpp \
+- 	MtpMetadataCache.cpp MtpNode.cpp MtpRoot.cpp MtpLibLock.cpp MtpStorage.cpp \
+- 	MtpFolder.cpp MtpFile.cpp TemporaryFile.cpp MtpLocalFileCopy.cpp \
+--	MtpFuseContext.cpp
+-+	MtpFuseContext.cpp MtpRecovery.cpp MtpRecovery.h MtpDirectoryTransactions.cpp MtpDirectoryTransactions.h
+- jmtpfs_CPPFLAGS = $(MTP_CFLAGS) $(FUSE_CFLAGS)
+- jmtpfs_LDADD = $(MTP_LIBS) $(FUSE_LIBS)
+---- a/src/MtpDevice.cpp
+-+++ b/src/MtpDevice.cpp
+-@@ -268,11 +268,16 @@
+- 		throw MtpFilesystemErrorWithErrorCode(EOPNOTSUPP, "Device does not support object filenames");
+- }
+- 
+--void MtpDevice::MoveObject(uint32_t id, uint32_t storageId, uint32_t parentId)
+-+void MtpDevice::RequireObjectMove()
+- {
+- 	MtpLibLock lock;
+- 	if (!LIBMTP_Check_Capability(m_mtpdevice, LIBMTP_DEVICECAP_MoveObject))
+- 		throw MtpFilesystemErrorWithErrorCode(EOPNOTSUPP, "Device does not support object moves");
+-+}
+-+
+-+void MtpDevice::MoveObject(uint32_t id, uint32_t storageId, uint32_t parentId)
+-+{
+-+	MtpLibLock lock;
+- 	if (LIBMTP_Move_Object(m_mtpdevice, id, storageId, parentId))
+- 		CheckErrors(true);
+- }
+---- a/src/MtpDevice.h
+-+++ b/src/MtpDevice.h
+-@@ -136,6 +136,7 @@
+- 	void CreateFolder(const std::string& name, uint32_t parentId, uint32_t storageId);
+- 	void DeleteObject(uint32_t id);
+- 	void RequireFileRename(LIBMTP_filetype_t type);
+-+	void RequireObjectMove();
+- 	void MoveObject(uint32_t id, uint32_t storageId, uint32_t parentId);
+- 	void RenameFile(uint32_t id, const std::string& newName);
+- 	void SetObjectProperty(uint32_t id, LIBMTP_property_t property, const std::string& value);
+---- /dev/null
+-+++ b/src/MtpDirectoryTransactions.cpp
+-@@ -0,0 +1,110 @@
+-+/*
+-+ * MtpDirectoryTransactions.cpp
+-+ *
+-+ *      Based on jmtpfs by Jason Ferrara
+-+ *
+-+ * This software is free software; you can redistribute it and/or
+-+ * modify it under the terms of the GNU General Public License
+-+ * version 3 as published by the Free Software Foundation.
+-+ *
+-+ * This software is distributed in the hope that it will be useful,
+-+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-+ * General Public License for more details.
+-+ *
+-+ * You should have received a copy of the GNU General Public
+-+ * License along with this library; if not, write to the
+-+ * Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+-+ * Boston, MA 02111-1301, USA.
+-+ * licensing@fsf.org
+-+ */
+-+
+-+#include "MtpDirectoryTransactions.h"
+-+#include "MtpRecovery.h"
+-+#include "mtpFilesystemErrors.h"
+-+#include <sstream>
+-+
+-+void MtpDirectoryTransactions::requireMutable(uint32_t id) const
+-+{
+-+	auto item = m_pending.find(id);
+-+	if (item != m_pending.end())
+-+		throw MtpFilesystemErrorWithErrorCode(EIO, "MTP directory requires recovery: " + item->second);
+-+}
+-+
+-+void MtpDirectoryTransactions::Rename(MtpDevice& device, const MtpFileInfo& source,
+-+	uint32_t parentId, const std::string& name, uint32_t targetId)
+-+{
+-+	requireMutable(source.id);
+-+	requireMutable(parentId ? parentId : source.storageId);
+-+	if (targetId)
+-+		requireMutable(targetId);
+-+	bool moving = parentId != source.parentId;
+-+	bool renaming = name != source.name;
+-+	if (moving)
+-+		device.RequireObjectMove();
+-+	if (renaming || targetId)
+-+		device.RequireFileRename(LIBMTP_FILETYPE_FOLDER);
+-+	if (!targetId && !(moving && renaming))
+-+	{
+-+		if (moving)
+-+			device.MoveObject(source.id, source.storageId, parentId);
+-+		else if (renaming)
+-+			device.RenameFile(source.id, name);
+-+		return;
+-+	}
+-+
+-+	std::string path = MtpRecovery::newDirectoryRecord();
+-+	std::string suffix = path.substr(path.find_last_of('/') + 1);
+-+	suffix.resize(suffix.size() - 7); // .record
+-+	std::string stagingName = ".alfs-move-" + suffix;
+-+	std::string backupName = ".alfs-backup-" + suffix;
+-+	m_pending[source.id] = path;
+-+	if (targetId)
+-+		m_pending[targetId] = path;
+-+	auto record = [&](const char* stage)
+-+	{
+-+		std::ostringstream text;
+-+		text << "version=1\noperation=directory-rename\nstage=" << stage << "\n"
+-+			<< "source_id=" << source.id << "\n"
+-+			<< "source_parent_id=" << source.parentId << "\n"
+-+			<< "storage_id=" << source.storageId << "\n"
+-+			<< "source_name_hex=" << MtpRecovery::hexName(source.name) << "\n"
+-+			<< "target_id=" << targetId << "\n"
+-+			<< "parent_id=" << parentId << "\n"
+-+			<< "target_name_hex=" << MtpRecovery::hexName(name) << "\n"
+-+			<< "staging_name_hex=" << MtpRecovery::hexName(stagingName) << "\n"
+-+			<< "backup_name_hex=" << MtpRecovery::hexName(backupName) << "\n";
+-+		MtpRecovery::write(path, text.str());
+-+	};
+-+	if (targetId)
+-+	{
+-+		record("backing-up");
+-+		device.RenameFile(targetId, backupName);
+-+	}
+-+	if (moving && renaming)
+-+	{
+-+		// Move under a unique name; the old name may exist in the new parent.
+-+		record("staging");
+-+		device.RenameFile(source.id, stagingName);
+-+	}
+-+	if (moving)
+-+	{
+-+		record("moving");
+-+		device.MoveObject(source.id, source.storageId, parentId);
+-+	}
+-+	if (renaming)
+-+	{
+-+		record("publishing");
+-+		device.RenameFile(source.id, name);
+-+	}
+-+	if (targetId)
+-+	{
+-+		record("cleaning-up");
+-+		device.DeleteObject(targetId);
+-+	}
+-+	record("complete");
+-+	MtpRecovery::remove(path);
+-+	m_pending.erase(source.id);
+-+	if (targetId)
+-+		m_pending.erase(targetId);
+-+}
+---- /dev/null
+-+++ b/src/MtpDirectoryTransactions.h
+-@@ -0,0 +1,37 @@
+-+/*
+-+ * MtpDirectoryTransactions.h
+-+ *
+-+ *      Based on jmtpfs by Jason Ferrara
+-+ *
+-+ * This software is free software; you can redistribute it and/or
+-+ * modify it under the terms of the GNU General Public License
+-+ * version 3 as published by the Free Software Foundation.
+-+ *
+-+ * This software is distributed in the hope that it will be useful,
+-+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-+ * General Public License for more details.
+-+ *
+-+ * You should have received a copy of the GNU General Public
+-+ * License along with this library; if not, write to the
+-+ * Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+-+ * Boston, MA 02111-1301, USA.
+-+ * licensing@fsf.org
+-+ */
+-+
+-+#ifndef MTPDIRECTORYTRANSACTIONS_H_
+-+#define MTPDIRECTORYTRANSACTIONS_H_
+-+#include "MtpDevice.h"
+-+#include <map>
+-+
+-+// Filesystem-scoped directory state, independent of metadata and file copies.
+-+class MtpDirectoryTransactions
+-+{
+-+public:
+-+	void requireMutable(uint32_t id) const;
+-+	void Rename(MtpDevice& device, const MtpFileInfo& source,
+-+		uint32_t parentId, const std::string& name, uint32_t targetId);
+-+private:
+-+	std::map<uint32_t, std::string> m_pending;
+-+};
+-+#endif
+---- a/src/MtpFile.cpp
+-+++ b/src/MtpFile.cpp
+-@@ -22,7 +22,7 @@
+- #include "mtpFilesystemErrors.h"
+- #include <errno.h>
+- 
+--MtpFile::MtpFile(MtpDevice& device,  MtpMetadataCache& cache, uint32_t id) : MtpNode(device, cache, id), m_localFile(cache.getOpenedFile(id))
+-+MtpFile::MtpFile(MtpDevice& device,  MtpMetadataCache& cache, MtpDirectoryTransactions& directories, uint32_t id) : MtpNode(device, cache, directories, id), m_localFile(cache.getOpenedFile(id))
+- {
+- }
+- 
+-@@ -145,6 +145,7 @@
+- 		if (S_ISDIR(attrs.st_mode))
+- 			throw MtpFilesystemErrorWithErrorCode(EISDIR, "Target is a directory");
+- 	}
+-+	m_directories.requireMutable(newParent.Id());
+- 	Open();
+- 	Fsync();
+- 	source = getMetadata().self;
+---- a/src/MtpFile.h
+-+++ b/src/MtpFile.h
+-@@ -28,7 +28,7 @@
+- class MtpFile : public MtpNode
+- {
+- public:
+--	MtpFile(MtpDevice& device,  MtpMetadataCache& cache, uint32_t id);
+-+	MtpFile(MtpDevice& device,  MtpMetadataCache& cache, MtpDirectoryTransactions& directories, uint32_t id);
+- 	~MtpFile();
+- 
+- 	std::unique_ptr<MtpNode> getNode(const FilesystemPath& path);
+---- a/src/MtpFolder.cpp
+-+++ b/src/MtpFolder.cpp
+-@@ -24,8 +24,8 @@
+- #include "mtpFilesystemErrors.h"
+- 
+- 
+--MtpFolder::MtpFolder(MtpDevice& device, MtpMetadataCache& cache, uint32_t storageId,
+--		uint32_t folderId) : MtpNode(device, cache, folderId ? folderId : storageId),
+-+MtpFolder::MtpFolder(MtpDevice& device, MtpMetadataCache& cache, MtpDirectoryTransactions& directories, uint32_t storageId,
+-+		uint32_t folderId) : MtpNode(device, cache, directories, folderId ? folderId : storageId),
+- 		m_storageId(storageId), m_folderId(folderId)
+- {
+- 
+-@@ -74,10 +74,10 @@
+- 		if (i->name == filename)
+- 		{
+- 			if (i->filetype != LIBMTP_FILETYPE_FOLDER)
+--				return std::unique_ptr<MtpNode>(new MtpFile(m_device, m_cache, i->id));
+-+				return std::unique_ptr<MtpNode>(new MtpFile(m_device, m_cache, m_directories, i->id));
+- 			else
+- 			{
+--				std::unique_ptr<MtpNode> n(new MtpFolder(m_device, m_cache, m_storageId, i->id));
+-+				std::unique_ptr<MtpNode> n(new MtpFolder(m_device, m_cache, m_directories, m_storageId, i->id));
+- 				FilesystemPath childPath = path.Body();
+- 				if (childPath.Empty())
+- 					return n;
+-@@ -112,6 +112,7 @@
+- 
+- void MtpFolder::Remove()
+- {
+-+	m_directories.requireMutable(Id());
+- 	if (readDirectory().size()>0)
+- 		throw MtpDirectoryNotEmpty();
+- 	uint32_t parentId = GetParentNodeId();
+-@@ -123,6 +124,7 @@
+- 
+- void MtpFolder::mkdir(const std::string& name)
+- {
+-+	m_directories.requireMutable(Id());
+- 	if (name.length() > MAX_MTP_NAME_LENGTH)
+- 		throw MtpNameTooLong();
+- 
+-@@ -136,6 +138,7 @@
+- 
+- void MtpFolder::CreateFile(const std::string& name)
+- {
+-+	m_directories.requireMutable(Id());
+- 	if (name.length() > MAX_MTP_NAME_LENGTH)
+- 		throw MtpNameTooLong();
+- 	if (hasChild(name))
+-@@ -172,18 +175,13 @@
+- 			throw MtpFilesystemErrorWithErrorCode(ENOTDIR, "Target is not a directory");
+- 		if (!target->readDirectory().empty())
+- 			throw MtpDirectoryNotEmpty();
+--		throw MtpFilesystemErrorWithErrorCode(EOPNOTSUPP, "Replacing an MTP directory is unsupported");
+- 	}
+--	bool moving = newParent.FolderId() != md.self.parentId;
+--	bool renaming = newName != md.self.name;
+--	if (moving && renaming)
+--		throw MtpFilesystemErrorWithErrorCode(EOPNOTSUPP, "Move and rename the directory separately");
+- 	uint32_t parentId = GetParentNodeId();
+- 	m_cache.clearItem(parentId);
+- 	m_cache.clearItem(newParent.Id());
+- 	m_cache.clearItem(m_id);
+--	if (moving)
+--		m_device.MoveObject(m_id, m_storageId, newParent.FolderId());
+--	else if (renaming)
+--		m_device.RenameFile(m_id, newName);
+-+	if (target)
+-+		m_cache.clearItem(target->Id());
+-+	m_directories.Rename(m_device, md.self, newParent.FolderId(), newName,
+-+		target ? target->Id() : 0);
+- }
+---- a/src/MtpFolder.h
+-+++ b/src/MtpFolder.h
+-@@ -27,7 +27,7 @@
+- class MtpFolder : public MtpNode
+- {
+- public:
+--	MtpFolder(MtpDevice& device, MtpMetadataCache& cache, uint32_t storageId, uint32_t folderId);
+-+	MtpFolder(MtpDevice& device, MtpMetadataCache& cache, MtpDirectoryTransactions& directories, uint32_t storageId, uint32_t folderId);
+- 
+- 	std::unique_ptr<MtpNode> getNode(const FilesystemPath& path);
+- 	void getattr(struct stat& info);
+---- a/src/MtpFuseContext.cpp
+-+++ b/src/MtpFuseContext.cpp
+-@@ -30,7 +30,7 @@
+- 
+- std::unique_ptr<MtpNode> MtpFuseContext::getNode(const FilesystemPath& path)
+- {
+--	std::unique_ptr<MtpNode> root(new MtpRoot(*m_device, m_cache));
+-+	std::unique_ptr<MtpNode> root(new MtpRoot(*m_device, m_cache, m_directories));
+- 	if (path.Head()!="/")
+- 		throw FileNotFound(path.str());
+- 	if (path.str()=="/")
+---- a/src/MtpFuseContext.h
+-+++ b/src/MtpFuseContext.h
+-@@ -43,6 +43,7 @@
+- 	gid_t						m_gid;
+- 	std::unique_ptr<MtpDevice>	m_device;
+- 	MtpMetadataCache 		  	m_cache;
+-+	MtpDirectoryTransactions m_directories;
+- };
+- 
+- 
+---- a/src/MtpLocalFileCopy.cpp
+-+++ b/src/MtpLocalFileCopy.cpp
+-@@ -19,35 +19,16 @@
+-  * licensing@fsf.org
+-  */
+- #include "MtpLocalFileCopy.h"
+-+#include "MtpRecovery.h"
+- #include "mtpFilesystemErrors.h"
+- #include <sys/stat.h>
+- #include <iostream>
+- #include <unistd.h>
+--#include <fcntl.h>
+--#include <cstdlib>
+--#include <memory>
+- #include <sstream>
+- 
+--// Names from the device are hex encoded so recovery records remain line oriented.
+--static std::string hexName(const std::string& name)
+--{
+--	const char* digits = "0123456789abcdef";
+--	std::string result;
+--	for (unsigned char byte : name)
+--	{
+--		result += digits[byte >> 4];
+--		result += digits[byte & 15];
+--	}
+--	return result;
+--}
+--
+- void MtpLocalFileCopy::initialize()
+- {
+--	const char* directory = getenv("JMTPFS_WRITEBACK_DIR");
+--	m_directory = directory ? directory : "/tmp/mtp-writeback";
+--	if (mkdir(m_directory.c_str(), 0700) && errno != EEXIST)
+--		throw CantCreateTempFile(errno);
+--	std::string pattern = m_directory + "/cache-XXXXXX";
+-+	std::string pattern = MtpRecovery::directory() + "/cache-XXXXXX";
+- 	std::vector<char> name(pattern.begin(), pattern.end());
+- 	name.push_back(0);
+- 	int fd = mkstemp(name.data());
+-@@ -104,18 +85,6 @@
+- 		std::cerr << "Remove MTP cache " << m_cachePath << ": " << strerror(errno) << std::endl;
+- }
+- 
+--void MtpLocalFileCopy::syncDirectory()
+--{
+--	int fd = open(m_directory.c_str(), O_RDONLY | O_DIRECTORY);
+--	if (fd < 0)
+--		throw WriteError(errno);
+--	int result = fsync(fd);
+--	int error = errno;
+--	close(fd);
+--	if (result)
+--		throw WriteError(error);
+--}
+--
+- void MtpLocalFileCopy::record(Stage stage)
+- {
+- 	m_stage = stage;
+-@@ -129,23 +98,13 @@
+- 		<< "target_id=" << m_target.id << "\n"
+- 		<< "source_parent_id=" << m_source.parentId << "\n"
+- 		<< "source_storage_id=" << m_source.storageId << "\n"
+--		<< "source_name_hex=" << hexName(m_source.name) << "\n"
+-+		<< "source_name_hex=" << MtpRecovery::hexName(m_source.name) << "\n"
+- 		<< "parent_id=" << m_target.parentId << "\n"
+- 		<< "storage_id=" << m_target.storageId << "\n"
+--		<< "target_name_hex=" << hexName(m_target.name) << "\n"
+--		<< "upload_name_hex=" << hexName(m_uploadName) << "\n"
+--		<< "backup_name_hex=" << hexName(m_backupName) << "\n";
+--	std::string next = m_recordPath + ".next";
+--	std::unique_ptr<FILE, int (*)(FILE*)> output(fopen(next.c_str(), "w"), fclose);
+--	if (!output)
+--		throw WriteError(errno);
+--	std::string content = text.str();
+--	if (fwrite(content.data(), 1, content.size(), output.get()) != content.size()
+--		|| fflush(output.get()) || fsync(fileno(output.get())))
+--		throw WriteError(errno);
+--	if (rename(next.c_str(), m_recordPath.c_str()))
+--		throw WriteError(errno);
+--	syncDirectory();
+-+		<< "target_name_hex=" << MtpRecovery::hexName(m_target.name) << "\n"
+-+		<< "upload_name_hex=" << MtpRecovery::hexName(m_uploadName) << "\n"
+-+		<< "backup_name_hex=" << MtpRecovery::hexName(m_backupName) << "\n";
+-+	MtpRecovery::write(m_recordPath, text.str());
+- }
+- 
+- void MtpLocalFileCopy::syncData()
+-@@ -201,17 +160,10 @@
+- 	record(RemovingSource);
+- }
+- 
+--void MtpLocalFileCopy::clearRecord()
+--{
+--	for (const std::string& path : { m_recordPath, m_recordPath + ".next" })
+--		if (unlink(path.c_str()) && errno != ENOENT)
+--			throw WriteError(errno);
+--}
+--
+- void MtpLocalFileCopy::finishRemoval()
+- {
+- 	record(Complete);
+--	clearRecord();
+-+	MtpRecovery::remove(m_recordPath);
+- 	m_stage = Unlinked;
+- }
+- 
+-@@ -277,7 +229,7 @@
+- 		m_device.DeleteObject(m_remoteId);
+- 	}
+- 	record(Complete);
+--	clearRecord();
+-+	MtpRecovery::remove(m_recordPath);
+- 	m_remoteId = m_replacementId;
+- 	m_metadata = uploaded;
+- 	m_metadata.name = m_target.name;
+---- a/src/MtpLocalFileCopy.h
+-+++ b/src/MtpLocalFileCopy.h
+-@@ -64,11 +64,9 @@
+- 	void prepare(const MtpFileInfo& target, const MtpFileInfo& source, Operation operation, Stage stage = Dirty);
+- 	void writeback(const MtpFileInfo& target, const MtpFileInfo& source, Operation operation, MtpLocalFileCopy* replaced);
+- 	void requireMutable() const;
+--	void clearRecord();
+- 	void beginWrite();
+- 	void syncData();
+- 	void record(Stage stage);
+--	void syncDirectory();
+- 
+- 	Stage m_stage;
+- 	Operation m_operation;
+-@@ -76,7 +74,6 @@
+- 	MtpFileInfo m_target;
+- 	MtpFileInfo m_source;
+- 	uint32_t m_replacementId;
+--	std::string m_directory;
+- 	std::string m_cachePath;
+- 	std::string m_recordPath;
+- 	std::string m_uploadName;
+---- a/src/MtpNode.cpp
+-+++ b/src/MtpNode.cpp
+-@@ -20,7 +20,7 @@
+-  */
+- #include "MtpNode.h"
+- #include "mtpFilesystemErrors.h"
+--MtpNode::MtpNode(MtpDevice& device, MtpMetadataCache& cache, uint32_t id) : m_device(device), m_cache(cache), m_id(id)
+-+MtpNode::MtpNode(MtpDevice& device, MtpMetadataCache& cache, MtpDirectoryTransactions& directories, uint32_t id) : m_device(device), m_cache(cache), m_directories(directories), m_id(id)
+- {
+- }
+- 
+---- a/src/MtpNode.h
+-+++ b/src/MtpNode.h
+-@@ -23,6 +23,7 @@
+- #define MTPNODE_H_
+- 
+- #include "MtpMetadataCache.h"
+-+#include "MtpDirectoryTransactions.h"
+- #include "MtpFilesystemPath.h"
+- #include "MtpDevice.h"
+- #include "FuseHeader.h"
+-@@ -34,7 +35,7 @@
+- class MtpNode : public MtpMetadataCacheFiller
+- {
+- public:
+--	MtpNode(MtpDevice& device, MtpMetadataCache& cache, uint32_t id);
+-+	MtpNode(MtpDevice& device, MtpMetadataCache& cache, MtpDirectoryTransactions& directories, uint32_t id);
+- 	virtual ~MtpNode();
+- 
+- 	virtual std::vector<std::string> readdir();
+-@@ -76,6 +77,7 @@
+- 
+- 	MtpDevice&					m_device;
+- 	MtpMetadataCache&			m_cache;
+-+	MtpDirectoryTransactions& m_directories;
+- 	uint32_t					m_id;
+- };
+- 
+---- /dev/null
+-+++ b/src/MtpRecovery.cpp
+-@@ -0,0 +1,97 @@
+-+/*
+-+ * MtpRecovery.cpp
+-+ *
+-+ *      Based on jmtpfs by Jason Ferrara
+-+ *
+-+ * This software is free software; you can redistribute it and/or
+-+ * modify it under the terms of the GNU General Public License
+-+ * version 3 as published by the Free Software Foundation.
+-+ *
+-+ * This software is distributed in the hope that it will be useful,
+-+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-+ * General Public License for more details.
+-+ *
+-+ * You should have received a copy of the GNU General Public
+-+ * License along with this library; if not, write to the
+-+ * Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+-+ * Boston, MA 02111-1301, USA.
+-+ * licensing@fsf.org
+-+ */
+-+
+-+#include "MtpRecovery.h"
+-+#include "mtpFilesystemErrors.h"
+-+#include <sys/stat.h>
+-+#include <fcntl.h>
+-+#include <unistd.h>
+-+#include <cstdlib>
+-+#include <memory>
+-+#include <vector>
+-+
+-+std::string MtpRecovery::directory()
+-+{
+-+	const char* value = getenv("JMTPFS_WRITEBACK_DIR");
+-+	std::string path = value ? value : "/tmp/mtp-writeback";
+-+	if (mkdir(path.c_str(), 0700) && errno != EEXIST)
+-+		throw CantCreateTempFile(errno);
+-+	return path;
+-+}
+-+
+-+std::string MtpRecovery::hexName(const std::string& name)
+-+{
+-+	const char* digits = "0123456789abcdef";
+-+	std::string result;
+-+	for (unsigned char byte : name)
+-+	{
+-+		result += digits[byte >> 4];
+-+		result += digits[byte & 15];
+-+	}
+-+	return result;
+-+}
+-+
+-+std::string MtpRecovery::newDirectoryRecord()
+-+{
+-+	std::string pattern = directory() + "/directory-XXXXXX.record";
+-+	std::vector<char> name(pattern.begin(), pattern.end());
+-+	name.push_back(0);
+-+	int fd = mkstemps(name.data(), 7);
+-+	if (fd < 0)
+-+		throw CantCreateTempFile(errno);
+-+	close(fd);
+-+	return name.data();
+-+}
+-+
+-+static void syncDirectory(const std::string& path)
+-+{
+-+	std::string directory = path.substr(0, path.find_last_of('/'));
+-+	int fd = open(directory.c_str(), O_RDONLY | O_DIRECTORY);
+-+	if (fd < 0)
+-+		throw WriteError(errno);
+-+	int result = fsync(fd);
+-+	int error = errno;
+-+	close(fd);
+-+	if (result)
+-+		throw WriteError(error);
+-+}
+-+
+-+void MtpRecovery::write(const std::string& path, const std::string& content)
+-+{
+-+	std::string next = path + ".next";
+-+	std::unique_ptr<FILE, int (*)(FILE*)> output(fopen(next.c_str(), "w"), fclose);
+-+	if (!output)
+-+		throw WriteError(errno);
+-+	if (fwrite(content.data(), 1, content.size(), output.get()) != content.size()
+-+		|| fflush(output.get()) || fsync(fileno(output.get())))
+-+		throw WriteError(errno);
+-+	if (rename(next.c_str(), path.c_str()))
+-+		throw WriteError(errno);
+-+	syncDirectory(path);
+-+}
+-+
+-+void MtpRecovery::remove(const std::string& path)
+-+{
+-+	for (const std::string& entry : { path, path + ".next" })
+-+		if (unlink(entry.c_str()) && errno != ENOENT)
+-+			throw WriteError(errno);
+-+	syncDirectory(path);
+-+}
+---- /dev/null
+-+++ b/src/MtpRecovery.h
+-@@ -0,0 +1,35 @@
+-+/*
+-+ * MtpRecovery.h
+-+ *
+-+ *      Based on jmtpfs by Jason Ferrara
+-+ *
+-+ * This software is free software; you can redistribute it and/or
+-+ * modify it under the terms of the GNU General Public License
+-+ * version 3 as published by the Free Software Foundation.
+-+ *
+-+ * This software is distributed in the hope that it will be useful,
+-+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-+ * General Public License for more details.
+-+ *
+-+ * You should have received a copy of the GNU General Public
+-+ * License along with this library; if not, write to the
+-+ * Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+-+ * Boston, MA 02111-1301, USA.
+-+ * licensing@fsf.org
+-+ */
+-+
+-+#ifndef MTPRECOVERY_H_
+-+#define MTPRECOVERY_H_
+-+#include <string>
+-+
+-+// Record persistence only; callers own operation phases and object lifetimes.
+-+namespace MtpRecovery
+-+{
+-+	std::string directory();
+-+	std::string hexName(const std::string& name);
+-+	std::string newDirectoryRecord();
+-+	void write(const std::string& path, const std::string& content);
+-+	void remove(const std::string& path);
+-+}
+-+#endif
+---- a/src/MtpRoot.cpp
+-+++ b/src/MtpRoot.cpp
+-@@ -23,7 +23,7 @@
+- #include "MtpStorage.h"
+- #include <limits>
+- 
+--MtpRoot::MtpRoot(MtpDevice& device, MtpMetadataCache& cache) : MtpNode(device, cache, std::numeric_limits<uint32_t>::max())
+-+MtpRoot::MtpRoot(MtpDevice& device, MtpMetadataCache& cache, MtpDirectoryTransactions& directories) : MtpNode(device, cache, directories, std::numeric_limits<uint32_t>::max())
+- {
+- }
+- 
+-@@ -45,7 +45,7 @@
+- 	{
+- 		if (i->description == storageName)
+- 		{
+--			std::unique_ptr<MtpNode> storageDevice(new MtpStorage(m_device, m_cache, i->id));
+-+			std::unique_ptr<MtpNode> storageDevice(new MtpStorage(m_device, m_cache, m_directories, i->id));
+- 			FilesystemPath childPath = path.Body();
+- 			if (childPath.Empty())
+- 				return storageDevice;
+---- a/src/MtpRoot.h
+-+++ b/src/MtpRoot.h
+-@@ -27,7 +27,7 @@
+- class MtpRoot : public MtpNode
+- {
+- public:
+--	MtpRoot(MtpDevice& device, MtpMetadataCache& cache);
+-+	MtpRoot(MtpDevice& device, MtpMetadataCache& cache, MtpDirectoryTransactions& directories);
+- 
+- 	std::unique_ptr<MtpNode> getNode(const FilesystemPath& path);
+- 	void getattr(struct stat& info);
+---- a/src/MtpStorage.cpp
+-+++ b/src/MtpStorage.cpp
+-@@ -22,14 +22,14 @@
+- #include "mtpFilesystemErrors.h"
+- #include <iostream>
+- 
+--MtpStorage::MtpStorage(MtpDevice& device, MtpMetadataCache& cache, uint32_t id) : MtpFolder(device, cache, id, 0)
+-+MtpStorage::MtpStorage(MtpDevice& device, MtpMetadataCache& cache, MtpDirectoryTransactions& directories, uint32_t id) : MtpFolder(device, cache, directories, id, 0)
+- {
+- 
+- }
+- 
+- std::unique_ptr<MtpNode> MtpStorage::Clone()
+- {
+--	return std::unique_ptr<MtpNode>(new MtpStorage(m_device, m_cache, m_id));
+-+	return std::unique_ptr<MtpNode>(new MtpStorage(m_device, m_cache, m_directories, m_id));
+- }
+- 
+- 
+---- a/src/MtpStorage.h
+-+++ b/src/MtpStorage.h
+-@@ -27,7 +27,7 @@
+- class MtpStorage : public MtpFolder
+- {
+- public:
+--	MtpStorage(MtpDevice& device, MtpMetadataCache& cache, uint32_t id);
+-+	MtpStorage(MtpDevice& device, MtpMetadataCache& cache, MtpDirectoryTransactions& directories, uint32_t id);
+- 
+- 	void Remove();
+- 
+diff --git a/scripts/jmtpfs-events.patch b/scripts/jmtpfs-events.patch
+deleted file mode 100644
+index 8aa222e..0000000
+--- a/scripts/jmtpfs-events.patch
++++ /dev/null
+@@ -1,93 +0,0 @@
+---- a/src/MtpDevice.h
+-+++ b/src/MtpDevice.h
+-@@ -22,6 +22,8 @@
+- #ifndef MTPDEVICE_H_
+- #define MTPDEVICE_H_
+- 
+-+#include <atomic>
+-+#include <thread>
+- #include "libmtp.h"
+- #include <string>
+- #include <vector>
+-@@ -144,6 +146,9 @@
+- 
+- 
+- protected:
+-+	void ReadEvents();
+-+	std::atomic<bool> m_stopEvents;
+-+	std::thread m_eventThread;
+- 	void CheckErrors(bool throwEvenIfNoError);
+- 	LIBMTP_mtpdevice_t* m_mtpdevice;
+- 	uint32_t		m_busLocation;
+---- a/src/MtpDevice.cpp
+-+++ b/src/MtpDevice.cpp
+-@@ -26,6 +26,7 @@
+- #include <unistd.h>
+- #include <algorithm>
+- #include <magic.h>
+-+#include <cstdio>
+- 
+- 
+- 
+-@@ -59,7 +60,7 @@
+- 	return m_fileInfo;
+- }
+- 
+--MtpDevice::MtpDevice(LIBMTP_raw_device_t& rawDevice)
+-+MtpDevice::MtpDevice(LIBMTP_raw_device_t& rawDevice) : m_stopEvents(false)
+- {
+- MtpLibLock	lock;
+- 
+-@@ -70,10 +71,20 @@
+- 	m_devnum = rawDevice.devnum;
+- 	LIBMTP_Clear_Errorstack(m_mtpdevice);
+- 	m_magicCookie = magic_open(MAGIC_MIME_TYPE);
+--	if (m_magicCookie == 0)
+--		throw std::runtime_error("Couldn't init magic");
+--	if (magic_load(m_magicCookie, 0))
+--		throw std::runtime_error(magic_error(m_magicCookie));
+-+	try
+-+	{
+-+		if (m_magicCookie == 0)
+-+			throw std::runtime_error("Couldn't init magic");
+-+		if (magic_load(m_magicCookie, 0))
+-+			throw std::runtime_error(magic_error(m_magicCookie));
+-+		m_eventThread = std::thread(&MtpDevice::ReadEvents, this);
+-+	}
+-+	catch (...)
+-+	{
+-+		if (m_magicCookie) magic_close(m_magicCookie);
+-+		LIBMTP_Release_Device(m_mtpdevice);
+-+		throw;
+-+	}
+- 
+- }
+- 
+-@@ -81,7 +92,27 @@
+- {
+- MtpLibLock	lock;
+- 
+-+	// No outstanding event read may outlive libmtp's device/USB handle.
+-+	m_stopEvents.store(true);
+-+	m_eventThread.join();
+-+	magic_close(m_magicCookie);
+- 	LIBMTP_Release_Device(m_mtpdevice);
+-+}
+-+
+-+void MtpDevice::ReadEvents()
+-+{
+-+	// Some phones wait for event delivery before replying to a rename. This
+-+	// must run independently of MtpLibLock and never modify the metadata cache.
+-+	while (!m_stopEvents.load())
+-+	{
+-+		LIBMTP_event_t event;
+-+		uint32_t parameter = 0;
+-+		if (LIBMTP_Read_Event_Timeout(m_mtpdevice, &event, &parameter, 500) < 0)
+-+		{
+-+			std::fprintf(stderr, "MTP event reader stopped: USB read failed\n");
+-+			break;
+-+		}
+-+	}
+- }
+- 
+- std::string MtpDevice::Get_Modelname()
+diff --git a/scripts/jmtpfs-file-operations.patch b/scripts/jmtpfs-file-operations.patch
+deleted file mode 100644
+index e522cd4..0000000
+--- a/scripts/jmtpfs-file-operations.patch
++++ /dev/null
+@@ -1,728 +0,0 @@
+---- a/src/MtpDevice.cpp
+-+++ b/src/MtpDevice.cpp
+-@@ -187,7 +187,10 @@
+- {
+- MtpLibLock lock;
+- 
+--	if (LIBMTP_Create_Folder(m_mtpdevice, (char*) name.c_str(), parentId, storageId)==0)
+-+	// Our synthetic storage root uses zero; libmtp's folder creation API
+-+	// requires 0xFFFFFFFF for a directory directly on that storage.
+-+	uint32_t parent = parentId ? parentId : 0xFFFFFFFF;
+-+	if (LIBMTP_Create_Folder(m_mtpdevice, (char*) name.c_str(), parent, storageId)==0)
+- 		CheckErrors(true);
+- }
+- 
+-@@ -248,12 +251,13 @@
+- 		destination->filetype = PropertyTypeFromMimeType(mimeType);
+- }
+- 
+--void MtpDevice::SendFile(LIBMTP_file_t* destination, int fd)
+-+MtpFileInfo MtpDevice::SendFile(LIBMTP_file_t* destination, int fd)
+- {
+- MtpLibLock lock;
+- 
+- 	if (LIBMTP_Send_File_From_File_Descriptor(m_mtpdevice, fd, destination, 0,0))
+- 		CheckErrors(true);
+-+	return GetFileInfo(destination->item_id);
+- }
+- 
+- 
+-@@ -265,6 +269,15 @@
+- 		CheckErrors(true);
+- 	if (!supported)
+- 		throw MtpFilesystemErrorWithErrorCode(EOPNOTSUPP, "Device does not support object filenames");
+-+}
+-+
+-+void MtpDevice::MoveObject(uint32_t id, uint32_t storageId, uint32_t parentId)
+-+{
+-+	MtpLibLock lock;
+-+	if (!LIBMTP_Check_Capability(m_mtpdevice, LIBMTP_DEVICECAP_MoveObject))
+-+		throw MtpFilesystemErrorWithErrorCode(EOPNOTSUPP, "Device does not support object moves");
+-+	if (LIBMTP_Move_Object(m_mtpdevice, id, storageId, parentId))
+-+		CheckErrors(true);
+- }
+- 
+- void MtpDevice::RenameFile(uint32_t id, const std::string& newName)
+---- a/src/MtpDevice.h
+-+++ b/src/MtpDevice.h
+-@@ -91,7 +91,7 @@
+- 	MtpFileInfo(LIBMTP_file_t& info);
+- 	MtpFileInfo(uint32_t i, uint32_t p, uint32_t storage,   std::string s, LIBMTP_filetype_t t, uint64_t fs) :
+- 			id(i), parentId(p), storageId(storage), name(s), filetype(t),
+--			filesize(fs){}
+-+			filesize(fs), modificationdate(0){}
+- 
+- 	uint32_t id;
+- 	uint32_t parentId;
+-@@ -132,10 +132,11 @@
+- 	MtpFileInfo GetFileInfo(uint32_t id);
+- 	void GetFile(uint32_t id, int fd);
+- 	void PrepareFile(LIBMTP_file_t* destination, int fd);
+--	void SendFile(LIBMTP_file_t* destination, int fd);
+-+	MtpFileInfo SendFile(LIBMTP_file_t* destination, int fd);
+- 	void CreateFolder(const std::string& name, uint32_t parentId, uint32_t storageId);
+- 	void DeleteObject(uint32_t id);
+- 	void RequireFileRename(LIBMTP_filetype_t type);
+-+	void MoveObject(uint32_t id, uint32_t storageId, uint32_t parentId);
+- 	void RenameFile(uint32_t id, const std::string& newName);
+- 	void SetObjectProperty(uint32_t id, LIBMTP_property_t property, const std::string& value);
+- 	static LIBMTP_filetype_t PropertyTypeFromMimeType(const std::string& mimeType);
+---- a/src/MtpFile.cpp
+-+++ b/src/MtpFile.cpp
+-@@ -44,7 +44,7 @@
+- MtpNodeMetadata MtpFile::getMetadata()
+- {
+- 	MtpNodeMetadata md;
+--	md.self = m_device.GetFileInfo(Id());
+-+	md.self = m_localFile ? m_localFile->metadata() : m_device.GetFileInfo(Id());
+- 	return md;
+- }
+- 
+-@@ -53,7 +53,7 @@
+- 	MtpNodeMetadata md = m_cache.getItem(Id(), *this);
+- 
+- 	info.st_mode = S_IFREG | 0644;
+--	info.st_nlink = 1;
+-+	info.st_nlink = m_localFile && m_localFile->unlinked() ? 0 : 1;
+- 	info.st_mtime = md.self.modificationdate;
+- 	std::shared_ptr<MtpLocalFileCopy> localFile = m_cache.getOpenedFile(Id());
+- 	if (localFile)
+-@@ -67,7 +67,8 @@
+- 
+- void MtpFile::Open()
+- {
+--	m_localFile = m_cache.openFile(m_device, Id());
+-+	if (!m_localFile)
+-+		m_localFile = m_cache.openFile(m_device, Id());
+- }
+- 
+- int MtpFile::Read(char *buf, size_t size, off_t offset)
+-@@ -111,42 +112,43 @@
+- void MtpFile::Remove()
+- {
+- 	uint32_t parentId = GetParentNodeId();
+--	m_device.DeleteObject(Id());
+- 	m_cache.clearItem(parentId);
+- 	m_cache.clearItem(Id());
+-+	if (m_localFile)
+-+		m_localFile->beginRemoval();
+-+	m_device.DeleteObject(Id());
+-+	if (m_localFile)
+-+		m_localFile->finishRemoval();
+- 
+- }
+- 
+--void MtpFile::Rename(MtpNode& newParent, const std::string& newName)
+-+void MtpFile::Rename(MtpNode& newParent, const std::string& newName, MtpNode* target)
+- {
+- 	if (newName.length() > MAX_MTP_NAME_LENGTH)
+- 		throw MtpNameTooLong();
+-+	MtpFileInfo source = getMetadata().self;
+-+	if (source.storageId != newParent.StorageId())
+-+		throw MtpFilesystemErrorWithErrorCode(EXDEV, "Different MTP storage");
+-+	if (target)
+-+	{
+-+		struct stat attrs;
+-+		target->getattr(attrs);
+-+		if (S_ISDIR(attrs.st_mode))
+-+			throw MtpFilesystemErrorWithErrorCode(EISDIR, "Target is a directory");
+-+	}
+- 	Open();
+- 	Fsync();
+--	MtpNodeMetadata md = m_cache.getItem(Id(), *this);
+--	uint32_t parentId = GetParentNodeId();
+--	/* This true in place rename seems to confuse apps on the android device. The Gallery app
+--	 * for example, won't notice image files that have been renamed. So to prevent this strangeness
+--	 * real rename is disabled, and instead we make a copy of the file and delete the original
+--	if ((newParent.FolderId() == md.self.parentId) && (newParent.StorageId() == md.self.storageId))
+--	{
+--		// we can do a real rename
+--		m_device.RenameFile(md.self.id, newName);
+--	}
+--	else
+--	*/
+--	{
+--		//we have to do a copy and delete
+--		std::shared_ptr<MtpLocalFileCopy> localFile = m_localFile;
+--		NewLIBMTPFile newFile(newName, newParent.FolderId(), newParent.StorageId(), localFile->getSize());
+--		localFile->CopyTo(m_device, newFile);
+--		m_cache.clearItem(md.self.id);
+--		m_cache.clearItem(((LIBMTP_file_t*)newFile)->item_id);
+--		m_device.DeleteObject(md.self.id);
+--		localFile->setId(((LIBMTP_file_t*)newFile)->item_id);
+--		m_cache.updateFile(md.self.id, localFile);
+--
+--	}
+-+	source = getMetadata().self;
+-+	MtpFileInfo destination(0, newParent.FolderId(), newParent.StorageId(), newName,
+-+		source.filetype, m_localFile->getSize());
+-+	if (target)
+-+		destination = target->getMetadata().self;
+-+	uint32_t oldId = Id();
+-+	m_cache.clearItem(oldId);
+-+	m_cache.clearItem(source.parentId ? source.parentId : source.storageId);
+- 	m_cache.clearItem(newParent.Id());
+--	m_cache.clearItem(parentId);
+-+	std::shared_ptr<MtpLocalFileCopy> replaced = m_cache.getOpenedFile(destination.id);
+-+	m_localFile->relocate(destination, source, replaced.get());
+-+	m_cache.updateFile(oldId, m_localFile);
+-+	m_cache.clearItem(destination.id);
+- }
+---- a/src/MtpFile.h
+-+++ b/src/MtpFile.h
+-@@ -43,7 +43,7 @@
+- 
+- 	void Fsync();
+- 	void Truncate(off_t length);
+--	void Rename(MtpNode& newParent, const std::string& newName);
+-+	void Rename(MtpNode& newParent, const std::string& newName, MtpNode* target);
+- 
+- 	MtpNodeMetadata getMetadata();
+- 
+---- a/src/MtpFolder.cpp
+-+++ b/src/MtpFolder.cpp
+-@@ -22,7 +22,7 @@
+- #include "MtpFolder.h"
+- #include "MtpFile.h"
+- #include "mtpFilesystemErrors.h"
+--#include "TemporaryFile.h"
+-+
+- 
+- MtpFolder::MtpFolder(MtpDevice& device, MtpMetadataCache& cache, uint32_t storageId,
+- 		uint32_t folderId) : MtpNode(device, cache, folderId ? folderId : storageId),
+-@@ -101,14 +101,23 @@
+- }
+- 
+- 
+-+bool MtpFolder::hasChild(const std::string& name)
+-+{
+-+	MtpNodeMetadata md = m_cache.getItem(m_id, *this);
+-+	for (const MtpFileInfo& child : md.children)
+-+		if (child.name == name)
+-+			return true;
+-+	return false;
+-+}
+-+
+- void MtpFolder::Remove()
+- {
+- 	if (readDirectory().size()>0)
+- 		throw MtpDirectoryNotEmpty();
+- 	uint32_t parentId = GetParentNodeId();
+--	m_device.DeleteObject(m_id);
+- 	m_cache.clearItem(parentId);
+- 	m_cache.clearItem(m_id);
+-+	m_device.DeleteObject(m_id);
+- 
+- }
+- 
+-@@ -117,8 +126,10 @@
+- 	if (name.length() > MAX_MTP_NAME_LENGTH)
+- 		throw MtpNameTooLong();
+- 
+-+	if (hasChild(name))
+-+		throw MtpFilesystemErrorWithErrorCode(EEXIST, "Directory entry exists");
+-+	m_cache.clearItem(m_id);
+- 	m_device.CreateFolder(name, m_folderId, m_storageId);
+--	m_cache.clearItem(m_id);
+- }
+- 
+- 
+-@@ -127,12 +138,13 @@
+- {
+- 	if (name.length() > MAX_MTP_NAME_LENGTH)
+- 		throw MtpNameTooLong();
+--
+--	NewLIBMTPFile newFile(name, m_folderId, m_storageId);
+--	TemporaryFile empty;
+--	m_device.SendFile(newFile, empty.FileNo());
+--	m_cache.clearItem(((LIBMTP_file_t*)newFile)->item_id);
+-+	if (hasChild(name))
+-+		throw MtpFilesystemErrorWithErrorCode(EEXIST, "Directory entry exists");
+-+	MtpFileInfo target(0, m_folderId, m_storageId, name, LIBMTP_FILETYPE_UNKNOWN, 0);
+-+	std::shared_ptr<MtpLocalFileCopy> file = std::make_shared<MtpLocalFileCopy>(m_device, target);
+- 	m_cache.clearItem(m_id);
+-+	file->sync();
+-+	m_cache.updateFile(0, file);
+- }
+- 
+- uint32_t MtpFolder::FolderId()
+-@@ -145,34 +157,33 @@
+- 	return m_storageId;
+- }
+- 
+--void MtpFolder::Rename(MtpNode& newParent, const std::string& newName)
+-+void MtpFolder::Rename(MtpNode& newParent, const std::string& newName, MtpNode* target)
+- {
+- 	if (newName.length() > MAX_MTP_NAME_LENGTH)
+- 		throw MtpNameTooLong();
+--
+- 	MtpNodeMetadata md = m_cache.getItem(m_id, *this);
+--
+-+	if (newParent.StorageId() != m_storageId)
+-+		throw MtpFilesystemErrorWithErrorCode(EXDEV, "Different MTP storage");
+-+	if (target)
+-+	{
+-+		struct stat attrs;
+-+		target->getattr(attrs);
+-+		if (!S_ISDIR(attrs.st_mode))
+-+			throw MtpFilesystemErrorWithErrorCode(ENOTDIR, "Target is not a directory");
+-+		if (!target->readDirectory().empty())
+-+			throw MtpDirectoryNotEmpty();
+-+		throw MtpFilesystemErrorWithErrorCode(EOPNOTSUPP, "Replacing an MTP directory is unsupported");
+-+	}
+-+	bool moving = newParent.FolderId() != md.self.parentId;
+-+	bool renaming = newName != md.self.name;
+-+	if (moving && renaming)
+-+		throw MtpFilesystemErrorWithErrorCode(EOPNOTSUPP, "Move and rename the directory separately");
+- 	uint32_t parentId = GetParentNodeId();
+--	if ((newParent.FolderId() == md.self.parentId) && (newParent.StorageId() == m_storageId))
+--	{
+--		// we can do a real rename
+-+	m_cache.clearItem(parentId);
+-+	m_cache.clearItem(newParent.Id());
+-+	m_cache.clearItem(m_id);
+-+	if (moving)
+-+		m_device.MoveObject(m_id, m_storageId, newParent.FolderId());
+-+	else if (renaming)
+- 		m_device.RenameFile(m_id, newName);
+--	}
+--	else
+--	{
+--		// we have to do a copy and delete
+--		newParent.mkdir(newName);
+--		std::unique_ptr<MtpNode> destDir(newParent.getNode(FilesystemPath(newName.c_str())));
+--		std::vector<std::string> contents = readDirectory();
+--		for(std::vector<std::string>::iterator i = contents.begin(); i != contents.end(); i++)
+--		{
+--			std::unique_ptr<MtpNode> child(getNode(FilesystemPath(i->c_str())));
+--			child->Rename(*destDir, *i);
+--		}
+--		Remove();
+--	}
+--	m_cache.clearItem(newParent.Id());
+--	m_cache.clearItem(parentId);
+--
+- }
+--
+---- a/src/MtpFolder.h
+-+++ b/src/MtpFolder.h
+-@@ -41,13 +41,14 @@
+- 	uint32_t FolderId();
+- 	uint32_t StorageId();
+- 
+--	void Rename(MtpNode& newParent, const std::string& newName);
+-+	void Rename(MtpNode& newParent, const std::string& newName, MtpNode* target);
+- 
+- 	MtpNodeMetadata getMetadata();
+- 
+-+private:
+-+	bool hasChild(const std::string& name);
+-+
+- protected:
+--
+--
+- 	std::vector<MtpFileInfo> m_files;
+- 	uint32_t m_storageId, m_folderId;
+- };
+---- a/src/MtpLocalFileCopy.cpp
+-+++ b/src/MtpLocalFileCopy.cpp
+-@@ -41,8 +41,7 @@
+- 	return result;
+- }
+- 
+--MtpLocalFileCopy::MtpLocalFileCopy(MtpDevice& device, uint32_t id) :
+--	m_device(device), m_remoteId(id), m_stage(Clean), m_replacementId(0)
+-+void MtpLocalFileCopy::initialize()
+- {
+- 	const char* directory = getenv("JMTPFS_WRITEBACK_DIR");
+- 	m_directory = directory ? directory : "/tmp/mtp-writeback";
+-@@ -67,14 +66,33 @@
+- 		unlink(m_cachePath.c_str());
+- 		throw CantCreateTempFile(error);
+- 	}
+-+}
+-+
+-+MtpLocalFileCopy::MtpLocalFileCopy(MtpDevice& device, uint32_t id) :
+-+	m_device(device), m_remoteId(id), m_stage(Clean), m_replacementId(0)
+-+{
+-+	initialize();
+- 	try
+- 	{
+-+		m_metadata = m_device.GetFileInfo(m_remoteId);
+- 		m_device.GetFile(m_remoteId, fileno(m_localFile));
+- 	}
+- 	catch (...)
+- 	{
+- 		fclose(m_localFile);
+- 		unlink(m_cachePath.c_str());
+-+		throw;
+-+	}
+-+}
+-+
+-+MtpLocalFileCopy::MtpLocalFileCopy(MtpDevice& device, const MtpFileInfo& target) :
+-+	m_device(device), m_remoteId(0), m_stage(Clean), m_replacementId(0)
+-+{
+-+	initialize();
+-+	try { prepare(target, target, Create); }
+-+	catch (...)
+-+	{
+-+		fclose(m_localFile);
+- 		throw;
+- 	}
+- }
+-@@ -102,11 +120,16 @@
+- {
+- 	m_stage = stage;
+- 	static const char* stages[] = { "clean", "dirty", "uploading", "backing-up",
+--		"publishing", "cleaning-up", "complete" };
+-+		"publishing", "cleaning-up", "removing-source", "complete" };
+-+	static const char* operations[] = { "replace", "create", "rename", "unlink" };
+- 	std::ostringstream text;
+--	text << "version=1\n" << "stage=" << stages[stage] << "\n"
+-+	text << "version=1\n" << "operation=" << operations[m_operation] << "\n" << "stage=" << stages[stage] << "\n"
+- 		<< "original_id=" << m_remoteId << "\n"
+- 		<< "replacement_id=" << m_replacementId << "\n"
+-+		<< "target_id=" << m_target.id << "\n"
+-+		<< "source_parent_id=" << m_source.parentId << "\n"
+-+		<< "source_storage_id=" << m_source.storageId << "\n"
+-+		<< "source_name_hex=" << hexName(m_source.name) << "\n"
+- 		<< "parent_id=" << m_target.parentId << "\n"
+- 		<< "storage_id=" << m_target.storageId << "\n"
+- 		<< "target_name_hex=" << hexName(m_target.name) << "\n"
+-@@ -131,36 +154,98 @@
+- 		throw WriteError(errno);
+- }
+- 
+-+void MtpLocalFileCopy::prepare(const MtpFileInfo& target, const MtpFileInfo& source, Operation operation, Stage stage)
+-+{
+-+	m_operation = operation;
+-+	m_target = target;
+-+	m_source = source;
+-+	m_replacementId = 0;
+-+	syncData();
+-+	record(stage);
+-+}
+-+
+- void MtpLocalFileCopy::beginWrite()
+- {
+-+	if (unlinked())
+-+		return;
+- 	if (m_stage == Clean)
+- 	{
+--		m_target = m_device.GetFileInfo(m_remoteId);
+--		m_replacementId = 0;
+-+		MtpFileInfo source = m_device.GetFileInfo(m_remoteId);
+-+		prepare(source, source, Replace);
+-+	}
+-+	else
+-+		requireMutable();
+-+}
+-+
+-+void MtpLocalFileCopy::relocate(const MtpFileInfo& target, const MtpFileInfo& source, MtpLocalFileCopy* replaced)
+-+{
+-+	writeback(target, source, Rename, replaced);
+-+}
+-+
+-+void MtpLocalFileCopy::requireMutable() const
+-+{
+-+	if (m_stage != Clean && m_stage != Dirty)
+-+		throw MtpFilesystemErrorWithErrorCode(EIO, "MTP writeback requires recovery: " + m_recordPath);
+-+}
+-+
+-+void MtpLocalFileCopy::beginRemoval()
+-+{
+-+	requireMutable();
+-+	if (m_stage == Clean)
+-+	{
+-+		MtpFileInfo source = m_device.GetFileInfo(m_remoteId);
+-+		prepare(source, source, Unlink);
+-+	}
+-+	m_operation = Unlink;
+-+	syncData();
+-+	record(RemovingSource);
+-+}
+-+
+-+void MtpLocalFileCopy::clearRecord()
+-+{
+-+	for (const std::string& path : { m_recordPath, m_recordPath + ".next" })
+-+		if (unlink(path.c_str()) && errno != ENOENT)
+-+			throw WriteError(errno);
+-+}
+-+
+-+void MtpLocalFileCopy::finishRemoval()
+-+{
+-+	record(Complete);
+-+	clearRecord();
+-+	m_stage = Unlinked;
+-+}
+-+
+-+void MtpLocalFileCopy::sync()
+-+{
+-+	if (unlinked())
+-+	{
+- 		syncData();
+--		record(Dirty);
+--	}
+--	else if (m_stage != Dirty)
+--		throw MtpFilesystemErrorWithErrorCode(EIO, "MTP writeback requires recovery: " + m_recordPath);
+--}
+--
+--void MtpLocalFileCopy::sync()
+--{
+-+		return;
+-+	}
+- 	if (m_stage == Clean)
+- 		return;
+- 	if (m_stage != Dirty)
+- 		throw MtpFilesystemErrorWithErrorCode(EIO, "MTP writeback requires recovery: " + m_recordPath);
+-+	writeback(m_target, m_source, m_operation, 0);
+-+}
+-+
+-+void MtpLocalFileCopy::writeback(const MtpFileInfo& target, const MtpFileInfo& source, Operation operation, MtpLocalFileCopy* replaced)
+-+{
+-+	if (replaced)
+-+		replaced->requireMutable();
+- 	syncData();
+--	NewLIBMTPFile newFile(m_uploadName, m_target.parentId, m_target.storageId, getSize());
+-+	NewLIBMTPFile newFile(m_uploadName, target.parentId, target.storageId, getSize());
+- 	m_device.PrepareFile(newFile, fileno(m_localFile));
+- 	LIBMTP_filetype_t uploadType = ((LIBMTP_file_t*)newFile)->filetype;
+- 	m_device.RequireFileRename(uploadType);
+--	if (m_target.id && m_target.filetype != uploadType)
+--		m_device.RequireFileRename(m_target.filetype);
+--	record(Uploading);
+-+	if (target.id && target.filetype != uploadType)
+-+		m_device.RequireFileRename(target.filetype);
+-+	// Namespace intent becomes persistent only after preflight, and is never a retryable dirty write.
+-+	prepare(target, source, operation, Uploading);
+-+	MtpFileInfo uploaded;
+- 	try
+- 	{
+--		m_device.SendFile(newFile, fileno(m_localFile));
+-+		uploaded = m_device.SendFile(newFile, fileno(m_localFile));
+- 	}
+- 	catch (...)
+- 	{
+-@@ -170,16 +255,32 @@
+- 		throw;
+- 	}
+- 	m_replacementId = ((LIBMTP_file_t*)newFile)->item_id;
+--	record(BackingUp);
+--	m_device.RenameFile(m_remoteId, m_backupName);
+-+	if (m_target.id)
+-+	{
+-+		if (replaced)
+-+			replaced->beginRemoval();
+-+		record(BackingUp);
+-+		m_device.RenameFile(m_target.id, m_backupName);
+-+	}
+- 	record(Publishing);
+- 	m_device.RenameFile(m_replacementId, m_target.name);
+--	record(CleaningUp);
+--	m_device.DeleteObject(m_remoteId);
+-+	if (m_target.id)
+-+	{
+-+		record(CleaningUp);
+-+		m_device.DeleteObject(m_target.id);
+-+		if (replaced)
+-+			replaced->finishRemoval();
+-+	}
+-+	if (m_remoteId && m_remoteId != m_target.id)
+-+	{
+-+		record(RemovingSource);
+-+		m_device.DeleteObject(m_remoteId);
+-+	}
+- 	record(Complete);
+--	if (unlink(m_recordPath.c_str()))
+--		throw WriteError(errno);
+-+	clearRecord();
+- 	m_remoteId = m_replacementId;
+-+	m_metadata = uploaded;
+-+	m_metadata.name = m_target.name;
+- 	m_stage = Clean;
+- }
+- 
+-@@ -227,17 +328,3 @@
+- 	if (ftruncate(fileno(m_localFile), length))
+- 		throw WriteError(errno);
+- }
+--
+--void MtpLocalFileCopy::CopyTo(MtpDevice& device, NewLIBMTPFile& destination)
+--{
+--	if (fflush(m_localFile))
+--		throw WriteError(errno);
+--	if (fseek(m_localFile, 0, SEEK_SET))
+--		throw WriteError(errno);
+--	struct stat tempInfo;
+--	if (fstat(fileno(m_localFile), &tempInfo))
+--			throw ReadError(errno);
+--
+--	device.PrepareFile(destination, fileno(m_localFile));
+--	device.SendFile(destination, fileno(m_localFile));
+--}
+---- a/src/MtpLocalFileCopy.h
+-+++ b/src/MtpLocalFileCopy.h
+-@@ -28,14 +28,19 @@
+- {
+- public:
+- 	MtpLocalFileCopy(MtpDevice& device, uint32_t id);
+-+	MtpLocalFileCopy(MtpDevice& device, const MtpFileInfo& target);
+- 	~MtpLocalFileCopy();
+- 
+- 	// Synchronization leaves the local copy open for all existing handles.
+- 	void sync();
+- 	uint32_t id() const { return m_remoteId; }
+- 	uint32_t parentId() const { return m_target.parentId ? m_target.parentId : m_target.storageId; }
+--	void setId(uint32_t id) { m_remoteId = id; }
+--	bool dirty() const { return m_stage != Clean; }
+-+	void relocate(const MtpFileInfo& target, const MtpFileInfo& source, MtpLocalFileCopy* replaced);
+-+	void beginRemoval();
+-+	void finishRemoval();
+-+	bool dirty() const { return m_stage != Clean && m_stage != Unlinked; }
+-+	bool unlinked() const { return m_stage == Unlinked; }
+-+	const MtpFileInfo& metadata() const { return m_metadata; }
+- 
+- 	off_t getSize();
+- 
+-@@ -44,7 +49,7 @@
+- 	void truncate(off_t length);
+- 	size_t read(void* ptr, size_t size);
+- 
+--	void CopyTo(MtpDevice& device, NewLIBMTPFile& destination);
+-+
+- 
+- private:
+- 	MtpLocalFileCopy(const MtpLocalFileCopy&);
+-@@ -53,14 +58,23 @@
+- 	MtpDevice&			m_device;
+- 	FILE*				m_localFile;
+- 	uint32_t			m_remoteId;
+--	enum Stage { Clean, Dirty, Uploading, BackingUp, Publishing, CleaningUp, Complete };
+-+	enum Stage { Clean, Dirty, Uploading, BackingUp, Publishing, CleaningUp, RemovingSource, Complete, Unlinked };
+-+	void initialize();
+-+	enum Operation { Replace, Create, Rename, Unlink };
+-+	void prepare(const MtpFileInfo& target, const MtpFileInfo& source, Operation operation, Stage stage = Dirty);
+-+	void writeback(const MtpFileInfo& target, const MtpFileInfo& source, Operation operation, MtpLocalFileCopy* replaced);
+-+	void requireMutable() const;
+-+	void clearRecord();
+- 	void beginWrite();
+- 	void syncData();
+- 	void record(Stage stage);
+- 	void syncDirectory();
+- 
+- 	Stage m_stage;
+-+	Operation m_operation;
+-+	MtpFileInfo m_metadata;
+- 	MtpFileInfo m_target;
+-+	MtpFileInfo m_source;
+- 	uint32_t m_replacementId;
+- 	std::string m_directory;
+- 	std::string m_cachePath;
+---- a/src/MtpNode.cpp
+-+++ b/src/MtpNode.cpp
+-@@ -107,7 +107,7 @@
+- 	throw NotImplemented("Truncate");
+- }
+- 
+--void MtpNode::Rename(MtpNode& newParent, const std::string& newName)
+-+void MtpNode::Rename(MtpNode& newParent, const std::string& newName, MtpNode* target)
+- {
+- 	throw NotImplemented("Rename");
+- }
+---- a/src/MtpNode.h
+-+++ b/src/MtpNode.h
+-@@ -57,7 +57,7 @@
+- 
+- 	virtual void CreateFile(const std::string& name);
+- 
+--	virtual void Rename(MtpNode& newParent, const std::string& newName);
+-+	virtual void Rename(MtpNode& newParent, const std::string& newName, MtpNode* target);
+- 
+- 	virtual void Truncate(off_t length);
+- 
+---- a/src/MtpStorage.cpp
+-+++ b/src/MtpStorage.cpp
+-@@ -39,7 +39,7 @@
+- 	throw ReadOnly();
+- }
+- 
+--void MtpStorage::Rename(MtpNode& newParent, const std::string& newName)
+-+void MtpStorage::Rename(MtpNode& newParent, const std::string& newName, MtpNode* target)
+- {
+- 	throw ReadOnly();
+- }
+---- a/src/MtpStorage.h
+-+++ b/src/MtpStorage.h
+-@@ -31,7 +31,7 @@
+- 
+- 	void Remove();
+- 
+--	void Rename(MtpNode& newParent, const std::string& newName);
+-+	void Rename(MtpNode& newParent, const std::string& newName, MtpNode* target);
+- 
+- 	std::unique_ptr<MtpNode> Clone();
+- };
+---- a/src/jmtpfs.cpp
+-+++ b/src/jmtpfs.cpp
+-@@ -29,6 +29,7 @@
+- #include <iostream>
+- #include <cstddef>
+- #include <cstdint>
+-+#include <fcntl.h>
+- #include <errno.h>
+- #include <sstream>
+- #include <iomanip>
+-@@ -91,6 +92,8 @@
+- extern "C" int jmtpfs_readdir(const char* pathStr, void* buf, fuse_fill_dir_t filler,
+- 		off_t offset, struct fuse_file_info *fi)
+- {
+-+	if (!pathStr)
+-+		return -ENOENT;
+- 	FUSE_ERROR_BLOCK_START
+- 
+- 		FilesystemPath path(pathStr);
+-@@ -186,6 +189,12 @@
+- {
+- 	FUSE_ERROR_BLOCK_START
+- 
+-+	if (info->flags & O_APPEND)
+-+	{
+-+		struct stat attrs;
+-+		openedFile(info)->getattr(attrs);
+-+		offset = attrs.st_size;
+-+	}
+- 	return openedFile(info)->Write(data, size, offset);
+- 
+- 	FUSE_ERROR_BLOCK_END
+-@@ -258,7 +267,12 @@
+- 	std::unique_ptr<MtpNode> n = context->getNode(path);
+- 	FilesystemPath newPath(newPathStr);
+- 	std::unique_ptr<MtpNode> newParent = context->getNode(newPath.AllButTail());
+--	n->Rename(*newParent, newPath.Tail());
+-+	std::unique_ptr<MtpNode> target;
+-+	try { target = context->getNode(newPath); }
+-+	catch (FileNotFound&) {}
+-+	if (target && target->Id() == n->Id())
+-+		return 0;
+-+	n->Rename(*newParent, newPath.Tail(), target.get());
+- 
+- 	return 0;
+- 
+-@@ -352,6 +366,7 @@
+- 	jmtpfs_oper.fsync = jmtpfs_fsync;
+- 	jmtpfs_oper.ftruncate = jmtpfs_ftruncate;
+- 	jmtpfs_oper.fgetattr = jmtpfs_fgetattr;
+-+	jmtpfs_oper.flag_nullpath_ok = 1;
+- 	jmtpfs_oper.rename = jmtpfs_rename;
+- 	jmtpfs_oper.statfs = jmtpfs_statfs;
+- 	jmtpfs_oper.chmod = jmtpfs_chmod;
+-@@ -503,6 +518,9 @@
+- 	fuse_opt_add_arg(&args, "-s"); // bug in fuse4x where multithreaded sometimes doesn't exit correctly.
+- #endif
+- 
+-+	// Open file lifetimes belong to our shared local copies, not libfuse hidden renames.
+-+	if (fuse_opt_add_arg(&args, "-ohard_remove") == -1)
+-+		return -1;
+- 	int result = fuse_main(args.argc, args.argv, &jmtpfs_oper, context.get());
+- 
+- 	if (options.displayHelp)
+diff --git a/scripts/jmtpfs-stable-files.patch b/scripts/jmtpfs-stable-files.patch
+deleted file mode 100644
+index cbeef7a..0000000
+--- a/scripts/jmtpfs-stable-files.patch
++++ /dev/null
+@@ -1,608 +0,0 @@
+---- a/src/MtpFile.cpp
+-+++ b/src/MtpFile.cpp
+-@@ -22,12 +22,18 @@
+- #include "mtpFilesystemErrors.h"
+- #include <errno.h>
+- 
+--MtpFile::MtpFile(MtpDevice& device,  MtpMetadataCache& cache, uint32_t id) : MtpNode(device, cache, id), m_opened(false)
+-+MtpFile::MtpFile(MtpDevice& device,  MtpMetadataCache& cache, uint32_t id) : MtpNode(device, cache, id), m_localFile(cache.getOpenedFile(id))
+- {
+- }
+- 
+- MtpFile::~MtpFile()
+- {
+-+	Close();
+-+}
+-+
+-+uint32_t MtpFile::Id()
+-+{
+-+	return m_localFile ? m_localFile->id() : m_id;
+- }
+- 
+- std::unique_ptr<MtpNode> MtpFile::getNode(const FilesystemPath& path)
+-@@ -38,18 +44,18 @@
+- MtpNodeMetadata MtpFile::getMetadata()
+- {
+- 	MtpNodeMetadata md;
+--	md.self = m_device.GetFileInfo(m_id);
+-+	md.self = m_device.GetFileInfo(Id());
+- 	return md;
+- }
+- 
+- void MtpFile::getattr(struct stat& info)
+- {
+--	MtpNodeMetadata md = m_cache.getItem(m_id, *this);
+-+	MtpNodeMetadata md = m_cache.getItem(Id(), *this);
+- 
+- 	info.st_mode = S_IFREG | 0644;
+- 	info.st_nlink = 1;
+- 	info.st_mtime = md.self.modificationdate;
+--	MtpLocalFileCopy* localFile = m_cache.getOpenedFile(m_id);
+-+	std::shared_ptr<MtpLocalFileCopy> localFile = m_cache.getOpenedFile(Id());
+- 	if (localFile)
+- 	{
+- 		info.st_size = localFile->getSize();
+-@@ -61,63 +67,53 @@
+- 
+- void MtpFile::Open()
+- {
+--	m_cache.openFile(m_device, m_id);
+-+	m_localFile = m_cache.openFile(m_device, Id());
+- }
+- 
+- int MtpFile::Read(char *buf, size_t size, off_t offset)
+- {
+--	MtpLocalFileCopy* localFile = m_cache.openFile(m_device, m_id);
+--
+--	localFile->seek(offset);
+--	return localFile->read(buf, size);
+--
+-+	m_localFile->seek(offset);
+-+	return m_localFile->read(buf, size);
+- }
+- 
+- int MtpFile::Write(const char* buf, size_t size, off_t offset)
+- {
+--
+--	MtpLocalFileCopy* localFile = m_cache.openFile(m_device, m_id);
+--	localFile->seek(offset);
+--//	m_cache.clearItem(m_id);
+--	return localFile->write(buf, size);
+-+	m_localFile->seek(offset);
+-+	return m_localFile->write(buf, size);
+- }
+- 
+- void MtpFile::Fsync()
+- {
+--	uint32_t parentId = GetParentNodeId();
+--	m_cache.clearItem(m_id);
+--	m_id = m_cache.closeFile(m_id);
+--	m_cache.clearItem(parentId);
+-+	// NFS COMMIT can occur mid-copy. Persist here; the writeback worker publishes
+-+	// after writes settle, and normal unmount drains all remaining files.
+-+	m_localFile->persist();
+- }
+- 
+- void MtpFile::Close()
+- {
+--	Fsync();
+-+	if (m_localFile)
+-+	{
+-+		m_id = Id();
+-+		m_localFile.reset();
+-+		m_cache.closeFile(m_id);
+-+	}
+- }
+- 
+- void MtpFile::Truncate(off_t length)
+- {
+--
+--	struct stat info;
+--	getattr(info);
+--	if (info.st_size == length)
+-+	Open();
+-+	if (m_localFile->getSize() == length)
+- 		return;
+--	uint32_t parentId = GetParentNodeId();
+--	MtpLocalFileCopy* localFile = m_cache.openFile(m_device, m_id);
+--	localFile->truncate(length);
+--	m_id = m_cache.closeFile(m_id);
+--	m_cache.clearItem(m_id);
+--	m_cache.clearItem(parentId);
+-+	m_localFile->truncate(length);
+-+	Fsync();
+- }
+--
+--
+- 
+- void MtpFile::Remove()
+- {
+- 	uint32_t parentId = GetParentNodeId();
+--	m_device.DeleteObject(m_id);
+-+	m_device.DeleteObject(Id());
+- 	m_cache.clearItem(parentId);
+--	m_cache.clearItem(m_id);
+-+	m_cache.clearItem(Id());
+- 
+- }
+- 
+-@@ -125,8 +121,9 @@
+- {
+- 	if (newName.length() > MAX_MTP_NAME_LENGTH)
+- 		throw MtpNameTooLong();
+-+	Open();
+- 	Fsync();
+--	MtpNodeMetadata md = m_cache.getItem(m_id, *this);
+-+	MtpNodeMetadata md = m_cache.getItem(Id(), *this);
+- 	uint32_t parentId = GetParentNodeId();
+- 	/* This true in place rename seems to confuse apps on the android device. The Gallery app
+- 	 * for example, won't notice image files that have been renamed. So to prevent this strangeness
+-@@ -140,14 +137,16 @@
+- 	*/
+- 	{
+- 		//we have to do a copy and delete
+--		MtpLocalFileCopy* localFile = m_cache.openFile(m_device, md.self.id);
+-+		std::shared_ptr<MtpLocalFileCopy> localFile = m_localFile;
+- 		NewLIBMTPFile newFile(newName, newParent.FolderId(), newParent.StorageId(), localFile->getSize());
+- 		localFile->CopyTo(m_device, newFile);
+- 		m_cache.clearItem(md.self.id);
+- 		m_cache.clearItem(((LIBMTP_file_t*)newFile)->item_id);
+- 		m_device.DeleteObject(md.self.id);
+--		m_id = ((LIBMTP_file_t*)newFile)->item_id;
+-+		localFile->setId(((LIBMTP_file_t*)newFile)->item_id);
+-+		m_cache.updateFile(md.self.id, localFile);
+- 
+- 	}
+-+	m_cache.clearItem(newParent.Id());
+- 	m_cache.clearItem(parentId);
+- }
+---- a/src/MtpFile.h
+-+++ b/src/MtpFile.h
+-@@ -34,6 +34,7 @@
+- 	std::unique_ptr<MtpNode> getNode(const FilesystemPath& path);
+- 	void getattr(struct stat& info);
+- 
+-+	uint32_t Id();
+- 	void Open();
+- 	void Close();
+- 	int Read(char *buf, size_t size, off_t offset);
+-@@ -47,10 +48,7 @@
+- 	MtpNodeMetadata getMetadata();
+- 
+- protected:
+--	MtpFileInfo	m_info;
+--	bool		m_opened;
+--	FILE*		m_localFile;
+--	bool		m_needWrite;
+-+	std::shared_ptr<MtpLocalFileCopy> m_localFile;
+- };
+- 
+- 
+---- a/src/MtpLocalFileCopy.cpp
+-+++ b/src/MtpLocalFileCopy.cpp
+-@@ -30,55 +30,46 @@
+- 	m_localFile = tmpfile();
+- 	if (m_localFile == 0)
+- 		throw CantCreateTempFile(errno);
+--	m_device.GetFile(m_remoteId, fileno(m_localFile));
+-+	try
+-+	{
+-+		m_device.GetFile(m_remoteId, fileno(m_localFile));
+-+	}
+-+	catch (...)
+-+	{
+-+		fclose(m_localFile);
+-+		throw;
+-+	}
+- 
+- }
+- 
+- MtpLocalFileCopy::~MtpLocalFileCopy()
+- {
+--	close();
+-+	fclose(m_localFile);
+- }
+- 
+--
+--uint32_t MtpLocalFileCopy::close()
+-+void MtpLocalFileCopy::sync()
+- {
+--	if (m_localFile)
+--	{
+--		if (m_needWriteBack)
+--		{
+--			m_needWriteBack = false;
+--			try
+--			{
+--				fflush(m_localFile);
+--				if (fseek(m_localFile, 0, SEEK_SET))
+--					throw WriteError(errno);
+--				struct stat tempInfo;
+--				if (fstat(fileno(m_localFile), &tempInfo))
+--					throw ReadError(errno);
+--				MtpFileInfo remoteInfo = m_device.GetFileInfo(m_remoteId);
+--				NewLIBMTPFile newFile(remoteInfo.name, remoteInfo.parentId, remoteInfo.storageId, tempInfo.st_size);
+--				m_device.DeleteObject(m_remoteId);
+--				std::cout << "************ sending file" << std::endl;
+--				m_device.SendFile(newFile, fileno(m_localFile));
+--				m_remoteId = ((LIBMTP_file_t*)newFile)->item_id;
+--			}
+--			catch(...)
+--			{
+--				fclose(m_localFile);
+--				m_localFile=0;
+--				throw;
+--			}
+--		}
+--
+--		fclose(m_localFile);
+--		m_localFile = 0;
+--	}
+--	return m_remoteId;
+-+	if (!m_needWriteBack)
+-+		return;
+-+	if (fflush(m_localFile))
+-+		throw WriteError(errno);
+-+	if (fseek(m_localFile, 0, SEEK_SET))
+-+		throw WriteError(errno);
+-+	struct stat tempInfo;
+-+	if (fstat(fileno(m_localFile), &tempInfo))
+-+		throw ReadError(errno);
+-+	MtpFileInfo remoteInfo = m_device.GetFileInfo(m_remoteId);
+-+	NewLIBMTPFile newFile(remoteInfo.name, remoteInfo.parentId, remoteInfo.storageId, tempInfo.st_size);
+-+	m_device.DeleteObject(m_remoteId);
+-+	m_device.SendFile(newFile, fileno(m_localFile));
+-+	m_remoteId = ((LIBMTP_file_t*)newFile)->item_id;
+-+	m_needWriteBack = false;
+- }
+- 
+- off_t MtpLocalFileCopy::getSize()
+- {
+--	fflush(m_localFile);
+-+	if (fflush(m_localFile))
+-+		throw WriteError(errno);
+- 	struct stat tempInfo;
+- 	if (fstat(fileno(m_localFile), &tempInfo))
+- 			throw ReadError(errno);
+-@@ -120,7 +111,8 @@
+- 
+- void MtpLocalFileCopy::CopyTo(MtpDevice& device, NewLIBMTPFile& destination)
+- {
+--	fflush(m_localFile);
+-+	if (fflush(m_localFile))
+-+		throw WriteError(errno);
+- 	if (fseek(m_localFile, 0, SEEK_SET))
+- 		throw WriteError(errno);
+- 	struct stat tempInfo;
+---- a/src/MtpLocalFileCopy.h
+-+++ b/src/MtpLocalFileCopy.h
+-@@ -30,12 +30,11 @@
+- 	MtpLocalFileCopy(MtpDevice& device, uint32_t id);
+- 	~MtpLocalFileCopy();
+- 
+--	/*
+--	 * Close the local copy and write changes back to the remote if needed.
+--	 * The return value is the id for the remote file, which may have
+--	 * changed if we had to write back changes.
+--	 */
+--	uint32_t close();
+-+	// Synchronization leaves the local copy open for all existing handles.
+-+	void sync();
+-+	uint32_t id() const { return m_remoteId; }
+-+	void setId(uint32_t id) { m_remoteId = id; }
+-+	bool dirty() const { return m_needWriteBack; }
+- 
+- 	off_t getSize();
+- 
+---- a/src/MtpMetadataCache.cpp
+-+++ b/src/MtpMetadataCache.cpp
+-@@ -34,13 +34,7 @@
+- }
+- MtpMetadataCache::~MtpMetadataCache()
+- {
+--	for(local_file_cache_type::iterator i = m_localFileCache.begin(); i != m_localFileCache.end(); i++)
+--	{
+--		delete i->second;
+--	}
+- }
+--
+--
+- 
+- MtpNodeMetadata MtpMetadataCache::getItem(uint32_t id, MtpMetadataCacheFiller& source)
+- {
+-@@ -84,34 +78,35 @@
+- 	}
+- }
+- 
+--MtpLocalFileCopy* MtpMetadataCache::openFile(MtpDevice& device, uint32_t id)
+-+std::shared_ptr<MtpLocalFileCopy> MtpMetadataCache::openFile(MtpDevice& device, uint32_t id)
+-+{
+-+	std::shared_ptr<MtpLocalFileCopy> file = getOpenedFile(id);
+-+	if (!file)
+-+	{
+-+		file = std::make_shared<MtpLocalFileCopy>(device, id);
+-+		m_localFileCache[id] = file;
+-+	}
+-+	return file;
+-+}
+-+
+-+std::shared_ptr<MtpLocalFileCopy> MtpMetadataCache::getOpenedFile(uint32_t id)
+- {
+- 	local_file_cache_type::iterator i = m_localFileCache.find(id);
+- 	if (i != m_localFileCache.end())
+- 		return i->second;
+--	MtpLocalFileCopy* newFile = new MtpLocalFileCopy(device, id);
+--	m_localFileCache[id] = newFile;
+--	return newFile;
+-+	return std::shared_ptr<MtpLocalFileCopy>();
+- }
+- 
+--MtpLocalFileCopy* MtpMetadataCache::getOpenedFile(uint32_t id)
+-+void MtpMetadataCache::updateFile(uint32_t oldId, const std::shared_ptr<MtpLocalFileCopy>& file)
+-+{
+-+	m_localFileCache.erase(oldId);
+-+	m_localFileCache[file->id()] = file;
+-+}
+-+
+-+void MtpMetadataCache::closeFile(uint32_t id)
+- {
+- 	local_file_cache_type::iterator i = m_localFileCache.find(id);
+--	if (i != m_localFileCache.end())
+--		return i->second;
+--	else
+--		return 0;
+-+	// Only the cache owns this clean copy; other opens keep their own references.
+-+	if (i != m_localFileCache.end() && i->second.use_count() == 1 && !i->second->dirty())
+-+		m_localFileCache.erase(i);
+- }
+--
+--uint32_t MtpMetadataCache::closeFile(uint32_t id)
+--{
+--	local_file_cache_type::iterator i = m_localFileCache.find(id);
+--	if (i != m_localFileCache.end())
+--	{
+--		uint32_t newId = i->second->close();
+--		delete i->second;
+--		m_localFileCache.erase(i);
+--		return newId;
+--	}
+--	return id;
+--}
+---- a/src/MtpMetadataCache.h
+-+++ b/src/MtpMetadataCache.h
+-@@ -25,6 +25,7 @@
+- #include "MtpNodeMetadata.h"
+- #include "MtpLocalFileCopy.h"
+- 
+-+#include <memory>
+- #include <list>
+- #include <unordered_map>
+- 
+-@@ -45,10 +46,10 @@
+- 	MtpNodeMetadata getItem(uint32_t id, MtpMetadataCacheFiller& source);
+- 	void clearItem(uint32_t id);
+- 
+--	MtpLocalFileCopy* openFile(MtpDevice& device, uint32_t id);
+--	MtpLocalFileCopy* getOpenedFile(uint32_t id);
+--
+--	uint32_t closeFile(uint32_t id);
+-+	std::shared_ptr<MtpLocalFileCopy> openFile(MtpDevice& device, uint32_t id);
+-+	std::shared_ptr<MtpLocalFileCopy> getOpenedFile(uint32_t id);
+-+	void updateFile(uint32_t oldId, const std::shared_ptr<MtpLocalFileCopy>& file);
+-+	void closeFile(uint32_t id);
+- 
+- private:
+- 	void clearOld();
+-@@ -60,7 +61,7 @@
+- 
+- 	typedef std::list<CacheEntry> cache_type;
+- 	typedef std::unordered_map<uint32_t, cache_type::iterator> cache_lookup_type;
+--	typedef std::unordered_map<uint32_t, MtpLocalFileCopy*> local_file_cache_type;
+-+	typedef std::unordered_map<uint32_t, std::shared_ptr<MtpLocalFileCopy> > local_file_cache_type;
+- 
+- 	cache_type				m_cache;
+- 	cache_lookup_type		m_cacheLookup;
+---- a/src/MtpNode.cpp
+-+++ b/src/MtpNode.cpp
+-@@ -36,7 +36,7 @@
+- 
+- uint32_t MtpNode::GetParentNodeId()
+- {
+--	MtpNodeMetadata md = m_cache.getItem(m_id, *this);
+-+	MtpNodeMetadata md = m_cache.getItem(Id(), *this);
+- 
+- 	if (md.self.parentId == 0)
+- 		return md.self.storageId;
+-@@ -69,6 +69,11 @@
+- void MtpNode::Close()
+- {
+- 	throw NotImplemented("Close");
+-+}
+-+
+-+void MtpNode::Fsync()
+-+{
+-+	throw NotImplemented("Fsync");
+- }
+- 
+- int MtpNode::Read(char *buf, size_t size, off_t offset)
+---- a/src/MtpNode.h
+-+++ b/src/MtpNode.h
+-@@ -48,6 +48,7 @@
+- 
+- 	virtual void Open();
+- 	virtual void Close();
+-+	virtual void Fsync();
+- 	virtual int Read(char *buf, size_t size, off_t offset);
+- 	virtual int Write(const char* buf, size_t size, off_t offset);
+- 
+---- a/src/jmtpfs.cpp
+-+++ b/src/jmtpfs.cpp
+-@@ -28,6 +28,7 @@
+- 
+- #include <iostream>
+- #include <cstddef>
+-+#include <cstdint>
+- #include <errno.h>
+- #include <sstream>
+- #include <iomanip>
+-@@ -106,34 +107,39 @@
+- }
+- 
+- 
+--extern "C" int jmtpfs_open(const char *pathStr, struct fuse_file_info *)
+--{
+--	FUSE_ERROR_BLOCK_START
+--
+--	FilesystemPath path(pathStr);
+--	context->getNode(path)->Open();
+--	return 0;
+--
+--	FUSE_ERROR_BLOCK_END
+--}
+--
+--extern "C" int jmtpfs_release(const char *pathStr, struct fuse_file_info *)
+--{
+--	FUSE_ERROR_BLOCK_START
+--
+--	FilesystemPath path(pathStr);
+--	context->getNode(path)->Close();
+--	return 0;
+--
+--	FUSE_ERROR_BLOCK_END
+--}
+--
+--extern "C" int jmtpfs_read(const char *pathStr, char *buf, size_t  size, off_t offset, struct fuse_file_info *)
+--{
+--	FUSE_ERROR_BLOCK_START
+--
+--	FilesystemPath path(pathStr);
+--	return context->getNode(path)->Read(buf,size,offset);
+-+static MtpNode* openedFile(struct fuse_file_info* info)
+-+{
+-+	return reinterpret_cast<MtpNode*>(static_cast<uintptr_t>(info->fh));
+-+}
+-+
+-+extern "C" int jmtpfs_open(const char *pathStr, struct fuse_file_info *info)
+-+{
+-+	FUSE_ERROR_BLOCK_START
+-+
+-+	FilesystemPath path(pathStr);
+-+	std::unique_ptr<MtpNode> node = context->getNode(path);
+-+	node->Open();
+-+	info->fh = reinterpret_cast<uintptr_t>(node.release());
+-+	return 0;
+-+
+-+	FUSE_ERROR_BLOCK_END
+-+}
+-+
+-+extern "C" int jmtpfs_release(const char *, struct fuse_file_info *info)
+-+{
+-+	FUSE_ERROR_BLOCK_START
+-+
+-+	delete openedFile(info);
+-+	return 0;
+-+
+-+	FUSE_ERROR_BLOCK_END
+-+}
+-+
+-+extern "C" int jmtpfs_read(const char *, char *buf, size_t size, off_t offset, struct fuse_file_info *info)
+-+{
+-+	FUSE_ERROR_BLOCK_START
+-+
+-+	return openedFile(info)->Read(buf, size, offset);
+- 
+- 	FUSE_ERROR_BLOCK_END
+- }
+-@@ -170,17 +176,17 @@
+- 	n->CreateFile(path.Tail());
+- 	n = context->getNode(path);
+- 	n->Open();
+--	return 0;
+--
+--	FUSE_ERROR_BLOCK_END
+--}
+--
+--extern "C" int jmtpfs_write(const char *pathStr, const char *data, size_t size, off_t offset, struct fuse_file_info *)
+--{
+--	FUSE_ERROR_BLOCK_START
+--
+--	FilesystemPath path(pathStr);
+--	return context->getNode(path)->Write(data, size, offset);
+-+	fileInfo->fh = reinterpret_cast<uintptr_t>(n.release());
+-+	return 0;
+-+
+-+	FUSE_ERROR_BLOCK_END
+-+}
+-+
+-+extern "C" int jmtpfs_write(const char *, const char *data, size_t size, off_t offset, struct fuse_file_info *info)
+-+{
+-+	FUSE_ERROR_BLOCK_START
+-+
+-+	return openedFile(info)->Write(data, size, offset);
+- 
+- 	FUSE_ERROR_BLOCK_END
+- }
+-@@ -207,17 +213,42 @@
+- 	FUSE_ERROR_BLOCK_END
+- }
+- 
+--extern "C" int jmtpfs_flush(const char *pathStr, struct fuse_file_info *)
+--{
+--	FUSE_ERROR_BLOCK_START
+--
+--	FilesystemPath path(pathStr);
+--	context->getNode(path)->Close();
+--	return 0;
+--
+--	FUSE_ERROR_BLOCK_END
+--}
+--
+-+extern "C" int jmtpfs_flush(const char *, struct fuse_file_info *info)
+-+{
+-+	FUSE_ERROR_BLOCK_START
+-+
+-+	openedFile(info)->Fsync();
+-+	return 0;
+-+
+-+	FUSE_ERROR_BLOCK_END
+-+}
+-+
+-+
+-+extern "C" int jmtpfs_fsync(const char *, int, struct fuse_file_info *info)
+-+{
+-+	FUSE_ERROR_BLOCK_START
+-+	openedFile(info)->Fsync();
+-+	return 0;
+-+	FUSE_ERROR_BLOCK_END
+-+}
+-+
+-+extern "C" int jmtpfs_ftruncate(const char *, off_t length, struct fuse_file_info *info)
+-+{
+-+	FUSE_ERROR_BLOCK_START
+-+	openedFile(info)->Truncate(length);
+-+	return 0;
+-+	FUSE_ERROR_BLOCK_END
+-+}
+-+
+-+extern "C" int jmtpfs_fgetattr(const char *, struct stat* attrs, struct fuse_file_info *info)
+-+{
+-+	FUSE_ERROR_BLOCK_START
+-+	openedFile(info)->getattr(*attrs);
+-+	attrs->st_uid = context->uid();
+-+	attrs->st_gid = context->gid();
+-+	return 0;
+-+	FUSE_ERROR_BLOCK_END
+-+}
+- 
+- extern "C" int jmtpfs_rename(const char *pathStr, const char *newPathStr)
+- {
+-@@ -318,6 +349,9 @@
+- 	jmtpfs_oper.truncate = jmtpfs_truncate;
+- 	jmtpfs_oper.unlink = jmtpfs_unlink;
+- 	jmtpfs_oper.flush = jmtpfs_flush;
+-+	jmtpfs_oper.fsync = jmtpfs_fsync;
+-+	jmtpfs_oper.ftruncate = jmtpfs_ftruncate;
+-+	jmtpfs_oper.fgetattr = jmtpfs_fgetattr;
+- 	jmtpfs_oper.rename = jmtpfs_rename;
+- 	jmtpfs_oper.statfs = jmtpfs_statfs;
+- 	jmtpfs_oper.chmod = jmtpfs_chmod;
+diff --git a/scripts/jmtpfs-writeback-queue.patch b/scripts/jmtpfs-writeback-queue.patch
+deleted file mode 100644
+index 4047bc5..0000000
+--- a/scripts/jmtpfs-writeback-queue.patch
++++ /dev/null
+@@ -1,1337 +0,0 @@
+---- a/src/Makefile.am
+-+++ b/src/Makefile.am
+-@@ -2,6 +2,6 @@
+- jmtpfs_SOURCES=jmtpfs.cpp MtpDevice.cpp ConnectedMtpDevices.cpp Mutex.cpp MtpFilesystemPath.cpp \
+- 	MtpMetadataCache.cpp MtpNode.cpp MtpRoot.cpp MtpLibLock.cpp MtpStorage.cpp \
+- 	MtpFolder.cpp MtpFile.cpp TemporaryFile.cpp MtpLocalFileCopy.cpp \
+--	MtpFuseContext.cpp MtpRecovery.cpp MtpRecovery.h MtpDirectoryTransactions.cpp MtpDirectoryTransactions.h
+-+	MtpFuseContext.cpp MtpWriteback.cpp MtpWriteback.h MtpRecovery.cpp MtpRecovery.h MtpDirectoryTransactions.cpp MtpDirectoryTransactions.h
+- jmtpfs_CPPFLAGS = $(MTP_CFLAGS) $(FUSE_CFLAGS)
+- jmtpfs_LDADD = $(MTP_LIBS) $(FUSE_LIBS)
+---- a/src/MtpDevice.cpp
+-+++ b/src/MtpDevice.cpp
+-@@ -27,6 +27,7 @@
+- #include <algorithm>
+- #include <magic.h>
+- #include <cstdio>
+-+#include <memory>
+- 
+- 
+- 
+-@@ -45,7 +46,9 @@
+- {
+- 	m_fileInfo = LIBMTP_new_file_t();
+- 	m_fileInfo->filename = strdup(filename.c_str());
+--	m_fileInfo->parent_id = parentId;
+-+	// This filesystem always names a destination. Zero lets libmtp choose a
+-+	// default media folder; use its explicit root sentinel for a storage root.
+-+	m_fileInfo->parent_id = parentId ? parentId : LIBMTP_FILES_AND_FOLDERS_ROOT;
+- 	m_fileInfo->storage_id = storageId;
+- 	m_fileInfo->filesize = size;
+- }
+-@@ -151,8 +154,17 @@
+- 				storage->FreeSpaceInBytes, storage->MaxCapacity));
+- 		storage = storage->next;
+- 	}
+-+	{
+-+		std::lock_guard<std::mutex> guard(m_storageMutex);
+-+		m_storageSnapshot = result;
+-+	}
+- 	return result;
+--
+-+}
+-+
+-+std::vector<MtpStorageInfo> MtpDevice::StorageSnapshot() const
+-+{
+-+	std::lock_guard<std::mutex> guard(m_storageMutex);
+-+	return m_storageSnapshot;
+- }
+- 
+- MtpStorageInfo MtpDevice::GetStorageInfo(uint32_t storageId)
+-@@ -206,12 +218,24 @@
+- }
+- 
+- 
+--void MtpDevice::GetFile(uint32_t id, int fd)
+--{
+--MtpLibLock lock;
+--
+--	if (LIBMTP_Get_File_To_File_Descriptor(m_mtpdevice, id, fd,0,0))
+--		CheckErrors(true);
+-+void MtpDevice::ReadFileRange(uint32_t id, uint64_t offset, char* data, uint32_t size)
+-+{
+-+	MtpLibLock lock;
+-+	while (size)
+-+	{
+-+		unsigned char* bytes = nullptr;
+-+		unsigned int count = 0;
+-+		int result = LIBMTP_GetPartialObject(m_mtpdevice, id, offset, size, &bytes, &count);
+-+		std::unique_ptr<unsigned char, decltype(&free)> owned(bytes, &free);
+-+		if (result) CheckErrors(true);
+-+		// libmtp deliberately shortens some Samsung reads. Complete the range,
+-+		// but reject an unexpected EOF instead of treating a sparse hole as data.
+-+		if (!count || count > size) throw ReadError(EIO);
+-+		memcpy(data, bytes, count);
+-+		offset += count;
+-+		data += count;
+-+		size -= count;
+-+	}
+- }
+- 
+- void MtpDevice::CreateFolder(const std::string& name, uint32_t parentId, uint32_t storageId)
+---- a/src/MtpDevice.h
+-+++ b/src/MtpDevice.h
+-@@ -24,6 +24,7 @@
+- 
+- #include <atomic>
+- #include <thread>
+-+#include <mutex>
+- #include "libmtp.h"
+- #include <string>
+- #include <vector>
+-@@ -132,7 +133,8 @@
+- 	MtpStorageInfo GetStorageInfo(uint32_t storageId);
+- 	std::vector<MtpFileInfo> GetFolderContents(uint32_t storageId, uint32_t folderId);
+- 	MtpFileInfo GetFileInfo(uint32_t id);
+--	void GetFile(uint32_t id, int fd);
+-+	void ReadFileRange(uint32_t id, uint64_t offset, char* data, uint32_t size);
+-+	std::vector<MtpStorageInfo> StorageSnapshot() const;
+- 	void PrepareFile(LIBMTP_file_t* destination, int fd);
+- 	MtpFileInfo SendFile(LIBMTP_file_t* destination, int fd);
+- 	void CreateFolder(const std::string& name, uint32_t parentId, uint32_t storageId);
+-@@ -146,6 +148,8 @@
+- 
+- 
+- protected:
+-+	mutable std::mutex m_storageMutex;
+-+	std::vector<MtpStorageInfo> m_storageSnapshot;
+- 	void ReadEvents();
+- 	std::atomic<bool> m_stopEvents;
+- 	std::thread m_eventThread;
+---- a/src/MtpFile.cpp
+-+++ b/src/MtpFile.cpp
+-@@ -73,14 +73,12 @@
+- 
+- int MtpFile::Read(char *buf, size_t size, off_t offset)
+- {
+--	m_localFile->seek(offset);
+--	return m_localFile->read(buf, size);
+-+	return m_localFile->readAt(buf, size, offset);
+- }
+- 
+- int MtpFile::Write(const char* buf, size_t size, off_t offset)
+- {
+--	m_localFile->seek(offset);
+--	return m_localFile->write(buf, size);
+-+	return m_localFile->writeAt(buf, size, offset, false);
+- }
+- 
+- void MtpFile::Fsync()
+-@@ -96,7 +94,6 @@
+- 	{
+- 		m_id = Id();
+- 		m_localFile.reset();
+--		m_cache.closeFile(m_id);
+- 	}
+- }
+- 
+-@@ -111,6 +108,8 @@
+- 
+- void MtpFile::Remove()
+- {
+-+	std::unique_lock<std::recursive_mutex> guard;
+-+	if (m_localFile) guard = m_localFile->lock();
+- 	uint32_t parentId = GetParentNodeId();
+- 	m_cache.clearItem(parentId);
+- 	m_cache.clearItem(Id());
+-@@ -149,6 +148,9 @@
+- 	m_cache.clearItem(source.parentId ? source.parentId : source.storageId);
+- 	m_cache.clearItem(newParent.Id());
+- 	std::shared_ptr<MtpLocalFileCopy> replaced = m_cache.getOpenedFile(destination.id);
+-+	auto guard = m_localFile->lock();
+-+	std::unique_lock<std::recursive_mutex> targetGuard;
+-+	if (replaced) targetGuard = replaced->lock();
+- 	m_localFile->relocate(destination, source, replaced.get());
+- 	m_cache.updateFile(oldId, m_localFile);
+- 	m_cache.clearItem(destination.id);
+---- a/src/MtpFile.h
+-+++ b/src/MtpFile.h
+-@@ -36,6 +36,7 @@
+- 
+- 	uint32_t Id();
+- 	void Open();
+-+	std::shared_ptr<MtpLocalFileCopy> localFile() const { return m_localFile; }
+- 	void Close();
+- 	int Read(char *buf, size_t size, off_t offset);
+- 	int Write(const char* buf, size_t size, off_t offset);
+---- a/src/MtpFolder.cpp
+-+++ b/src/MtpFolder.cpp
+-@@ -38,9 +38,8 @@
+- 	if (folderId==0)
+- 	{
+- 		folderId = 0xFFFFFFFF;
+--		md.self.id = m_storageId;
+--		md.self.parentId = 0;
+--		md.self.storageId = m_storageId;
+-+		// Storage roots have no device file metadata (including modification time).
+-+		md.self = MtpFileInfo(m_storageId, 0, m_storageId, "", LIBMTP_FILETYPE_FOLDER, 0);
+- 	}
+- 	else
+- 	{
+-@@ -53,15 +52,12 @@
+- 
+- void MtpFolder::getattr(struct stat& info)
+- {
+--	MtpNodeMetadata md = m_cache.getItem(m_id, *this);
+-+	// NFS READDIRPLUS asks for each child's attributes. Do not enumerate that
+-+	// child's contents just to count links: this can block a parent listing on
+-+	// an unrelated or inaccessible directory. MTP has no directory hard links.
+- 	info.st_mode = S_IFDIR | 0755;
+- 	info.st_nlink = 2;
+--	info.st_mtime = md.self.modificationdate;
+--	for(std::vector<MtpFileInfo>::iterator i = md.children.begin(); i!=md.children.end(); i++)
+--	{
+--		if (i->filetype == LIBMTP_FILETYPE_FOLDER)
+--			info.st_nlink++;
+--	}
+-+	info.st_mtime = m_folderId ? m_device.GetFileInfo(m_id).modificationdate : 0;
+- }
+- 
+- std::unique_ptr<MtpNode> MtpFolder::getNode(const FilesystemPath& path)
+---- a/src/MtpFuseContext.cpp
+-+++ b/src/MtpFuseContext.cpp
+-@@ -23,9 +23,9 @@
+- #include "MtpRoot.h"
+- 
+- MtpFuseContext::MtpFuseContext(std::unique_ptr<MtpDevice> device,  uid_t uid, gid_t gid) :
+--	m_device(std::move(device)), m_uid(uid), m_gid(gid)
+-+	m_uid(uid), m_gid(gid), m_device(std::move(device)), m_writeback(m_cache)
+- {
+--
+-+	m_device->GetStorageDevices();
+- }
+- 
+- std::unique_ptr<MtpNode> MtpFuseContext::getNode(const FilesystemPath& path)
+-@@ -39,6 +39,24 @@
+- 		return root->getNode(path.Body());
+- }
+- 
+-+void MtpFuseContext::statfs(const FilesystemPath& path, struct statvfs& info) const
+-+{
+-+	info = {};
+-+	info.f_bsize = info.f_frsize = 512;
+-+	info.f_namemax = 233;
+-+	const auto storageName = path.Body().Head();
+-+	bool found = path.str() == "/";
+-+	for (const auto& storage : m_device->StorageSnapshot())
+-+	{
+-+		if (path.str() != "/" && storage.description != storageName) continue;
+-+		found = true;
+-+		info.f_blocks += storage.maxCapacity / info.f_bsize;
+-+		info.f_bfree += storage.freeSpaceInBytes / info.f_bsize;
+-+	}
+-+	if (!found) throw FileNotFound(path.str());
+-+	info.f_bavail = info.f_bfree;
+-+}
+-+
+- uid_t MtpFuseContext::uid() const
+- {
+- 	return m_uid;
+---- a/src/MtpFuseContext.h
+-+++ b/src/MtpFuseContext.h
+-@@ -25,6 +25,7 @@
+- #include "MtpDevice.h"
+- #include "MtpMetadataCache.h"
+- #include "MtpNode.h"
+-+#include "MtpWriteback.h"
+- #include <memory>
+- #include <sys/types.h>
+- 
+-@@ -32,6 +33,13 @@
+- {
+- public:
+- 	MtpFuseContext(std::unique_ptr<MtpDevice> device,  uid_t uid, gid_t gid);
+-+
+-+	void statfs(const FilesystemPath& path, struct statvfs& info) const;
+-+	void checkWriteback() const { m_writeback.check(); }
+-+	bool finish() { return m_writeback.finish(); }
+-+	std::shared_ptr<MtpLocalFileCopy> cachedFile(const std::string& path) { return m_cache.cachedFile(path); }
+-+	void rememberFile(const std::string& path, const std::shared_ptr<MtpLocalFileCopy>& file) { m_cache.rememberFile(path, file); }
+-+	void forgetPath(const std::string& path) { m_cache.forgetPath(path); }
+- 
+- 	std::unique_ptr<MtpNode> getNode(const FilesystemPath& path);
+- 
+-@@ -44,6 +52,7 @@
+- 	std::unique_ptr<MtpDevice>	m_device;
+- 	MtpMetadataCache 		  	m_cache;
+- 	MtpDirectoryTransactions m_directories;
+-+	MtpWriteback m_writeback;
+- };
+- 
+- 
+---- a/src/MtpLocalFileCopy.cpp
+-+++ b/src/MtpLocalFileCopy.cpp
+-@@ -25,6 +25,9 @@
+- #include <iostream>
+- #include <unistd.h>
+- #include <sstream>
+-+#include <algorithm>
+-+
+-+const off_t MtpLocalFileCopy::ReadBlockSize;
+- 
+- void MtpLocalFileCopy::initialize()
+- {
+-@@ -56,7 +59,8 @@
+- 	try
+- 	{
+- 		m_metadata = m_device.GetFileInfo(m_remoteId);
+--		m_device.GetFile(m_remoteId, fileno(m_localFile));
+-+		m_remoteSize = m_metadata.filesize;
+-+		if (ftruncate(fileno(m_localFile), m_remoteSize)) throw WriteError(errno);
+- 	}
+- 	catch (...)
+- 	{
+-@@ -67,7 +71,7 @@
+- }
+- 
+- MtpLocalFileCopy::MtpLocalFileCopy(MtpDevice& device, const MtpFileInfo& target) :
+--	m_device(device), m_remoteId(0), m_stage(Clean), m_replacementId(0)
+-+	m_device(device), m_remoteId(0), m_stage(Clean), m_metadata(target), m_replacementId(0)
+- {
+- 	initialize();
+- 	try { prepare(target, target, Create); }
+-@@ -123,36 +127,84 @@
+- 	record(stage);
+- }
+- 
+-+void MtpLocalFileCopy::persist()
+-+{
+-+	auto guard = lock();
+-+	syncData();
+-+	if (!unlinked()) requireMutable();
+-+}
+-+
+-+bool MtpLocalFileCopy::publishDue(bool drain) const
+-+{
+-+	auto guard = lock();
+-+	return m_stage == Dirty && !writebackFailed() && (drain ||
+-+		std::chrono::steady_clock::now() - m_changedAt >= std::chrono::seconds(2));
+-+}
+-+
+-+void MtpLocalFileCopy::fetchRange(off_t offset, off_t size)
+-+{
+-+	if (!size || offset >= m_remoteSize) return;
+-+	off_t end = offset + std::min(size, m_remoteSize - offset);
+-+	for (off_t block = offset / ReadBlockSize; block <= (end - 1) / ReadBlockSize; ++block)
+-+	{
+-+		if (m_readBlocks.count(block)) continue;
+-+		off_t start = block * ReadBlockSize;
+-+		size_t count = std::min(ReadBlockSize, m_remoteSize - start);
+-+		std::vector<char> bytes(count);
+-+		m_device.ReadFileRange(m_remoteId, start, bytes.data(), count);
+-+		ssize_t written = pwrite(fileno(m_localFile), bytes.data(), count, start);
+-+		if (written != ssize_t(count)) throw WriteError(written < 0 ? errno : EIO);
+-+		m_readBlocks.insert(block);
+-+	}
+-+}
+-+
+-+void MtpLocalFileCopy::materialize(off_t retainedSize)
+-+{
+-+	fetchRange(0, retainedSize);
+-+	// Once mutation begins, every retained byte belongs to the durable local
+-+	// version. Recovery and upload must never mistake unfetched holes for zeros.
+-+	m_remoteSize = 0;
+-+	m_readBlocks.clear();
+-+}
+-+
+- void MtpLocalFileCopy::beginWrite()
+- {
+-+	++m_version;
+-+	m_changedAt = std::chrono::steady_clock::now();
+- 	if (unlinked())
+- 		return;
+-+	requireMutable();
+- 	if (m_stage == Clean)
+- 	{
+--		MtpFileInfo source = m_device.GetFileInfo(m_remoteId);
+-+		MtpFileInfo source = m_metadata;
+- 		prepare(source, source, Replace);
+- 	}
+--	else
+--		requireMutable();
+- }
+- 
+- void MtpLocalFileCopy::relocate(const MtpFileInfo& target, const MtpFileInfo& source, MtpLocalFileCopy* replaced)
+- {
+-+	auto guard = lock();
+-+	materialize(getSize());
+- 	writeback(target, source, Rename, replaced);
+- }
+- 
+- void MtpLocalFileCopy::requireMutable() const
+- {
+-+	if (writebackFailed())
+-+		throw MtpFilesystemErrorWithErrorCode(EIO, "MTP writeback failed: " + m_writebackError);
+- 	if (m_stage != Clean && m_stage != Dirty)
+- 		throw MtpFilesystemErrorWithErrorCode(EIO, "MTP writeback requires recovery: " + m_recordPath);
+- }
+- 
+- void MtpLocalFileCopy::beginRemoval()
+- {
+-+	auto guard = lock();
+-+	// An already-open handle must remain readable after its remote ID is deleted.
+-+	materialize(getSize());
+- 	requireMutable();
+- 	if (m_stage == Clean)
+- 	{
+--		MtpFileInfo source = m_device.GetFileInfo(m_remoteId);
+-+		MtpFileInfo source = m_metadata;
+- 		prepare(source, source, Unlink);
+- 	}
+- 	m_operation = Unlink;
+-@@ -162,6 +214,7 @@
+- 
+- void MtpLocalFileCopy::finishRemoval()
+- {
+-+	auto guard = lock();
+- 	record(Complete);
+- 	MtpRecovery::remove(m_recordPath);
+- 	m_stage = Unlinked;
+-@@ -169,6 +222,7 @@
+- 
+- void MtpLocalFileCopy::sync()
+- {
+-+	auto guard = lock();
+- 	if (unlinked())
+- 	{
+- 		syncData();
+-@@ -238,6 +292,7 @@
+- 
+- off_t MtpLocalFileCopy::getSize()
+- {
+-+	auto guard = lock();
+- 	if (fflush(m_localFile))
+- 		throw WriteError(errno);
+- 	struct stat tempInfo;
+-@@ -276,7 +331,98 @@
+- 
+- void MtpLocalFileCopy::truncate(off_t length)
+- {
+-+	auto guard = lock();
+-+	if (!unlinked()) requireMutable();
+-+	if (length == 0)
+-+	{
+-+		// O_TRUNC discards the old version: do not fetch bytes that will never
+-+		// survive. A failed truncate must leave the remote range map intact.
+-+		if (ftruncate(fileno(m_localFile), 0)) throw WriteError(errno);
+-+		m_remoteSize = 0;
+-+		m_readBlocks.clear();
+-+		beginWrite();
+-+		return;
+-+	}
+-+	materialize(getSize());
+- 	beginWrite();
+- 	if (ftruncate(fileno(m_localFile), length))
+- 		throw WriteError(errno);
+- }
+-+
+-+// The live cache remains writable while USB reads this separate, durable copy.
+-+MtpLocalFileCopy::MtpLocalFileCopy(MtpDevice& device, const MtpFileInfo& source,
+-+	int sourceFd, off_t size) : m_device(device), m_remoteId(source.id),
+-+	m_stage(Clean), m_metadata(source), m_replacementId(0)
+-+{
+-+	initialize();
+-+	try
+-+	{
+-+		std::vector<char> buffer(1024 * 1024);
+-+		for (off_t offset = 0; offset < size;)
+-+		{
+-+			ssize_t count = pread(sourceFd, buffer.data(), std::min<off_t>(buffer.size(), size - offset), offset);
+-+			if (count <= 0) throw ReadError(count < 0 ? errno : EIO);
+-+			if (fwrite(buffer.data(), 1, count, m_localFile) != size_t(count)) throw WriteError(errno);
+-+			offset += count;
+-+		}
+-+		prepare(source, source, Replace);
+-+	}
+-+	catch (...)
+-+	{
+-+		fclose(m_localFile);
+-+		if (!dirty()) unlink(m_cachePath.c_str());
+-+		throw;
+-+	}
+-+}
+-+
+-+std::unique_ptr<MtpLocalFileCopy> MtpLocalFileCopy::snapshot(uint64_t& version)
+-+{
+-+	auto guard = lock();
+-+	version = m_version;
+-+	return std::unique_ptr<MtpLocalFileCopy>(
+-+		new MtpLocalFileCopy(m_device, m_metadata, fileno(m_localFile), getSize()));
+-+}
+-+
+-+void MtpLocalFileCopy::acceptSnapshot(const MtpLocalFileCopy& snapshot, uint64_t version)
+-+{
+-+	auto guard = lock();
+-+	m_remoteId = snapshot.id();
+-+	m_metadata = snapshot.metadata();
+-+	if (m_version == version)
+-+	{
+-+		MtpRecovery::remove(m_recordPath);
+-+		m_stage = Clean;
+-+	}
+-+	else
+-+	{
+-+		// Later acknowledged writes still belong to the live cache. Retarget its
+-+		// journal to the newly published object, then publish this version later.
+-+		prepare(m_metadata, m_metadata, Replace);
+-+	}
+-+}
+-+
+-+int MtpLocalFileCopy::readAt(char* buffer, size_t size, off_t offset)
+-+{
+-+	auto guard = lock();
+-+	fetchRange(offset, size);
+-+	seek(offset);
+-+	return read(buffer, size);
+-+}
+-+
+-+int MtpLocalFileCopy::writeAt(const char* buffer, size_t size, off_t offset, bool append)
+-+{
+-+	auto guard = lock();
+-+	if (!unlinked()) requireMutable();
+-+	materialize(getSize());
+-+	seek(append ? getSize() : offset);
+-+	return write(buffer, size);
+-+}
+-+
+-+void MtpLocalFileCopy::attributes(struct stat& info)
+-+{
+-+	auto guard = lock();
+-+	info.st_mode = S_IFREG | 0644;
+-+	info.st_nlink = unlinked() ? 0 : 1;
+-+	info.st_mtime = m_metadata.modificationdate;
+-+	info.st_size = getSize();
+-+}
+---- a/src/MtpLocalFileCopy.h
+-+++ b/src/MtpLocalFileCopy.h
+-@@ -23,6 +23,11 @@
+- #define MTPLOCALFILECOPY_H_
+- 
+- #include "MtpDevice.h"
+-+#include <chrono>
+-+#include <memory>
+-+#include <mutex>
+-+#include <set>
+-+#include <sys/stat.h>
+- 
+- class MtpLocalFileCopy
+- {
+-@@ -33,25 +38,44 @@
+- 
+- 	// Synchronization leaves the local copy open for all existing handles.
+- 	void sync();
+--	uint32_t id() const { return m_remoteId; }
+--	uint32_t parentId() const { return m_target.parentId ? m_target.parentId : m_target.storageId; }
+-+	std::unique_lock<std::recursive_mutex> lock() const {
+-+		return std::unique_lock<std::recursive_mutex>(m_mutex);
+-+	}
+-+	std::unique_ptr<MtpLocalFileCopy> snapshot(uint64_t& version);
+-+	void acceptSnapshot(const MtpLocalFileCopy& snapshot, uint64_t version);
+-+	int readAt(char* buffer, size_t size, off_t offset);
+-+	int writeAt(const char* buffer, size_t size, off_t offset, bool append);
+-+	void attributes(struct stat& info);
+-+	void persist();
+-+	bool publishDue(bool drain) const;
+-+	void failWriteback(const std::string& error) { auto guard = lock(); m_writebackError = error; }
+-+	bool writebackFailed() const { auto guard = lock(); return !m_writebackError.empty(); }
+-+	uint32_t id() const { auto guard = lock(); return m_remoteId; }
+-+	uint32_t parentId() const { auto guard = lock(); return m_target.parentId ? m_target.parentId : m_target.storageId; }
+- 	void relocate(const MtpFileInfo& target, const MtpFileInfo& source, MtpLocalFileCopy* replaced);
+- 	void beginRemoval();
+- 	void finishRemoval();
+--	bool dirty() const { return m_stage != Clean && m_stage != Unlinked; }
+--	bool unlinked() const { return m_stage == Unlinked; }
+--	const MtpFileInfo& metadata() const { return m_metadata; }
+-+	bool dirty() const { auto guard = lock(); return m_stage != Clean && m_stage != Unlinked; }
+-+	bool unlinked() const { auto guard = lock(); return m_stage == Unlinked; }
+-+	MtpFileInfo metadata() const { auto guard = lock(); return m_metadata; }
+- 
+- 	off_t getSize();
+- 
+--	void seek(long offset);
+--	size_t write(const void* ptr, size_t size);
+- 	void truncate(off_t length);
+--	size_t read(void* ptr, size_t size);
+- 
+- 
+- 
+- private:
+-+	// Only these blocks of the sparse remote image have actually been fetched.
+-+	static const off_t ReadBlockSize = 1024 * 1024;
+-+	off_t m_remoteSize = 0;
+-+	std::set<off_t> m_readBlocks;
+-+	void fetchRange(off_t offset, off_t size);
+-+	void materialize(off_t retainedSize);
+-+	void seek(long offset);
+-+	size_t write(const void* ptr, size_t size);
+-+	size_t read(void* ptr, size_t size);
+-+	MtpLocalFileCopy(MtpDevice& device, const MtpFileInfo& source, int sourceFd, off_t size);
+- 	MtpLocalFileCopy(const MtpLocalFileCopy&);
+- 	MtpLocalFileCopy& operator=(const MtpLocalFileCopy&);
+- 
+-@@ -68,6 +92,10 @@
+- 	void syncData();
+- 	void record(Stage stage);
+- 
+-+	mutable std::recursive_mutex m_mutex;
+-+	uint64_t m_version = 0;
+-+	std::chrono::steady_clock::time_point m_changedAt = std::chrono::steady_clock::now();
+-+	std::string m_writebackError;
+- 	Stage m_stage;
+- 	Operation m_operation;
+- 	MtpFileInfo m_metadata;
+---- a/src/MtpMetadataCache.cpp
+-+++ b/src/MtpMetadataCache.cpp
+-@@ -84,6 +84,7 @@
+- 	if (!file)
+- 	{
+- 		file = std::make_shared<MtpLocalFileCopy>(device, id);
+-+		std::lock_guard<std::mutex> guard(m_localFilesMutex);
+- 		m_localFileCache[id] = file;
+- 	}
+- 	return file;
+-@@ -91,6 +92,7 @@
+- 
+- std::shared_ptr<MtpLocalFileCopy> MtpMetadataCache::getOpenedFile(uint32_t id)
+- {
+-+	std::lock_guard<std::mutex> guard(m_localFilesMutex);
+- 	local_file_cache_type::iterator i = m_localFileCache.find(id);
+- 	if (i != m_localFileCache.end())
+- 		return i->second;
+-@@ -99,14 +101,58 @@
+- 
+- void MtpMetadataCache::updateFile(uint32_t oldId, const std::shared_ptr<MtpLocalFileCopy>& file)
+- {
+-+	std::lock_guard<std::mutex> guard(m_localFilesMutex);
+- 	m_localFileCache.erase(oldId);
+- 	m_localFileCache[file->id()] = file;
+- }
+- 
+--void MtpMetadataCache::closeFile(uint32_t id)
+-+std::vector<std::shared_ptr<MtpLocalFileCopy>> MtpMetadataCache::openedFiles() const
+- {
+--	local_file_cache_type::iterator i = m_localFileCache.find(id);
+--	// Only the cache owns this clean copy; other opens keep their own references.
+--	if (i != m_localFileCache.end() && i->second.use_count() == 1 && !i->second->dirty())
+--		m_localFileCache.erase(i);
+-+	std::lock_guard<std::mutex> guard(m_localFilesMutex);
+-+	std::vector<std::shared_ptr<MtpLocalFileCopy>> files;
+-+	for (const auto& entry : m_localFileCache) files.push_back(entry.second);
+-+	return files;
+- }
+-+
+-+void MtpMetadataCache::closeIdleFiles()
+-+{
+-+	std::lock_guard<std::mutex> guard(m_localFilesMutex);
+-+	// NFS can release a FUSE handle between requests while the Mac still has the
+-+	// file open. Keep the working set cached until the writeback queue is idle.
+-+	for (const auto& entry : m_localFileCache)
+-+		if (entry.second->dirty()) return;
+-+	for (auto entry = m_localFileCache.begin(); entry != m_localFileCache.end();)
+-+	{
+-+		if (entry->second.use_count() == 1 && !entry->second->dirty())
+-+			entry = m_localFileCache.erase(entry);
+-+		else
+-+			++entry;
+-+	}
+-+}
+-+
+-+std::shared_ptr<MtpLocalFileCopy> MtpMetadataCache::cachedFile(const std::string& path)
+-+{
+-+	std::lock_guard<std::mutex> guard(m_localFilesMutex);
+-+	auto entry = m_paths.find(path);
+-+	return entry == m_paths.end() ? nullptr : entry->second.lock();
+-+}
+-+
+-+void MtpMetadataCache::rememberFile(const std::string& path,
+-+	const std::shared_ptr<MtpLocalFileCopy>& file)
+-+{
+-+	std::lock_guard<std::mutex> guard(m_localFilesMutex);
+-+	m_paths[path] = file;
+-+}
+-+
+-+void MtpMetadataCache::forgetPath(const std::string& path)
+-+{
+-+	std::lock_guard<std::mutex> guard(m_localFilesMutex);
+-+	for (auto entry = m_paths.begin(); entry != m_paths.end();)
+-+	{
+-+		const auto& name = entry->first;
+-+		if (entry->second.expired() || (name.compare(0, path.size(), path) == 0 &&
+-+			(name.size() == path.size() || name[path.size()] == '/')))
+-+			entry = m_paths.erase(entry);
+-+		else ++entry;
+-+	}
+-+}
+---- a/src/MtpMetadataCache.h
+-+++ b/src/MtpMetadataCache.h
+-@@ -26,6 +26,8 @@
+- #include "MtpLocalFileCopy.h"
+- 
+- #include <memory>
+-+#include <mutex>
+-+#include <vector>
+- #include <list>
+- #include <unordered_map>
+- 
+-@@ -49,7 +51,11 @@
+- 	std::shared_ptr<MtpLocalFileCopy> openFile(MtpDevice& device, uint32_t id);
+- 	std::shared_ptr<MtpLocalFileCopy> getOpenedFile(uint32_t id);
+- 	void updateFile(uint32_t oldId, const std::shared_ptr<MtpLocalFileCopy>& file);
+--	void closeFile(uint32_t id);
+-+	void closeIdleFiles();
+-+	std::shared_ptr<MtpLocalFileCopy> cachedFile(const std::string& path);
+-+	void rememberFile(const std::string& path, const std::shared_ptr<MtpLocalFileCopy>& file);
+-+	void forgetPath(const std::string& path);
+-+	std::vector<std::shared_ptr<MtpLocalFileCopy>> openedFiles() const;
+- 
+- private:
+- 	void clearOld();
+-@@ -65,7 +71,11 @@
+- 
+- 	cache_type				m_cache;
+- 	cache_lookup_type		m_cacheLookup;
+-+	// Path lookup and idle eviction share a lock: acquiring a weak path reference
+-+	// must not race removal of the cache owner that keeps dirty files queued.
+-+	mutable std::mutex m_localFilesMutex;
+- 	local_file_cache_type	m_localFileCache;
+-+	std::unordered_map<std::string, std::weak_ptr<MtpLocalFileCopy>> m_paths;
+- 
+- };
+- 
+---- a/src/MtpRecovery.cpp
+-+++ b/src/MtpRecovery.cpp
+-@@ -28,11 +28,16 @@
+- #include <memory>
+- #include <vector>
+- 
+-+static void syncDirectory(const std::string& path);
+-+
+- std::string MtpRecovery::directory()
+- {
+- 	const char* value = getenv("JMTPFS_WRITEBACK_DIR");
+- 	std::string path = value ? value : "/tmp/mtp-writeback";
+--	if (mkdir(path.c_str(), 0700) && errno != EEXIST)
+-+	if (mkdir(path.c_str(), 0700) == 0)
+-+		// Sync the directory containing this new entry, not only its contents.
+-+		syncDirectory(path);
+-+	else if (errno != EEXIST)
+- 		throw CantCreateTempFile(errno);
+- 	return path;
+- }
+---- a/src/MtpRoot.cpp
+-+++ b/src/MtpRoot.cpp
+-@@ -82,9 +82,7 @@
+- MtpNodeMetadata MtpRoot::getMetadata()
+- {
+- 	MtpNodeMetadata md;
+--	md.self.id = m_id;
+--	md.self.parentId = 0;
+--	md.self.storageId = 0;
+-+	md.self = MtpFileInfo(m_id, 0, 0, "", LIBMTP_FILETYPE_FOLDER, 0);
+- 	md.storages = m_device.GetStorageDevices();
+- 
+- 	return md;
+---- /dev/null
+-+++ b/src/MtpWriteback.cpp
+-@@ -0,0 +1,159 @@
+-+/*
+-+ * MtpWriteback.cpp
+-+ *
+-+ *      Based on jmtpfs by Jason Ferrara
+-+ *
+-+ * This software is free software; you can redistribute it and/or
+-+ * modify it under the terms of the GNU General Public License
+-+ * version 3 as published by the Free Software Foundation.
+-+ *
+-+ * This software is distributed in the hope that it will be useful,
+-+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-+ * General Public License for more details.
+-+ *
+-+ * You should have received a copy of the GNU General Public
+-+ * License along with this library; if not, write to the
+-+ * Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+-+ * Boston, MA 02111-1301, USA.
+-+ * licensing@fsf.org
+-+ */
+-+
+-+#include "MtpWriteback.h"
+-+#include "MtpRecovery.h"
+-+#include "Mutex.h"
+-+#include "mtpFilesystemErrors.h"
+-+#include <chrono>
+-+#include <iostream>
+-+
+-+extern RecursiveMutex namespaceLock;
+-+
+-+MtpWriteback::MtpWriteback(MtpMetadataCache& cache) :
+-+	m_cache(cache), m_directory(MtpRecovery::directory())
+-+{
+-+	// An incomplete session is retained even if the helper dies between stages.
+-+	MtpRecovery::write(m_directory + "/session.pending", "writeback\n");
+-+	status();
+-+	m_thread = std::thread(&MtpWriteback::run, this);
+-+}
+-+
+-+MtpWriteback::~MtpWriteback()
+-+{
+-+	stop();
+-+}
+-+
+-+void MtpWriteback::stop()
+-+{
+-+	m_stop.store(true);
+-+	if (m_thread.joinable()) m_thread.join();
+-+}
+-+
+-+void MtpWriteback::check() const
+-+{
+-+	std::lock_guard<std::mutex> guard(m_errorMutex);
+-+	if (!m_error.empty())
+-+		throw MtpFilesystemErrorWithErrorCode(EIO, "MTP writeback stopped: " + m_error);
+-+}
+-+
+-+bool MtpWriteback::status()
+-+{
+-+	LockMutex guard(namespaceLock);
+-+	size_t pending = 0, failed = 0;
+-+	for (const auto& file : m_cache.openedFiles())
+-+	{
+-+		pending += file->dirty();
+-+		failed += file->writebackFailed();
+-+	}
+-+	std::string text = "{\"pending\":" + std::to_string(pending)
+-+		+ ",\"failed\":" + std::to_string(failed) + "}\n";
+-+	if (text != m_previousStatus)
+-+	{
+-+		MtpRecovery::write(m_directory + "/status.json", text);
+-+		m_previousStatus = text;
+-+	}
+-+	return pending == 0 && failed == 0;
+-+}
+-+
+-+void MtpWriteback::publish(bool drain)
+-+{
+-+	std::vector<std::shared_ptr<MtpLocalFileCopy>> files;
+-+	{
+-+		LockMutex guard(namespaceLock);
+-+		files = m_cache.openedFiles();
+-+	}
+-+	for (const auto& file : files)
+-+	{
+-+		// Serialize one remote namespace transaction, never the local data path
+-+		// or a whole batch. Rename/unlink cannot invalidate this object's IDs.
+-+		LockMutex guard(namespaceLock);
+-+		if (!file->publishDue(drain)) continue;
+-+		uint32_t oldId = file->id();
+-+		uint32_t parentId = file->parentId();
+-+		try
+-+		{
+-+			auto started = std::chrono::steady_clock::now();
+-+			std::cerr << "MTP writeback uploading " << file->getSize() << " bytes" << std::endl;
+-+			uint64_t version;
+-+			auto snapshot = file->snapshot(version);
+-+			snapshot->sync();
+-+			file->acceptSnapshot(*snapshot, version);
+-+			m_cache.updateFile(oldId, file);
+-+			m_cache.clearItem(oldId);
+-+			m_cache.clearItem(file->id());
+-+			m_cache.clearItem(parentId);
+-+			std::cerr << "MTP writeback completed in "
+-+				<< std::chrono::duration_cast<std::chrono::milliseconds>(
+-+					std::chrono::steady_clock::now() - started).count() << " ms" << std::endl;
+-+		}
+-+		catch (const std::exception& error)
+-+		{
+-+			// A failed USB transaction may have changed the phone. Retain the
+-+			// journal and surface EIO on this file; never retry it automatically.
+-+			file->failWriteback(error.what());
+-+			std::cerr << "MTP writeback failed; cache retained: " << error.what() << std::endl;
+-+		}
+-+	}
+-+	files.clear();
+-+	LockMutex guard(namespaceLock);
+-+	m_cache.closeIdleFiles();
+-+}
+-+
+-+void MtpWriteback::run()
+-+{
+-+	while (!m_stop.load())
+-+	{
+-+		std::this_thread::sleep_for(std::chrono::milliseconds(200));
+-+		if (m_stop.load()) break;
+-+		try
+-+		{
+-+			status();
+-+			publish(false);
+-+			status();
+-+		}
+-+		catch (const std::exception& error)
+-+		{
+-+			std::lock_guard<std::mutex> guard(m_errorMutex);
+-+			m_error = error.what();
+-+			std::cerr << "MTP writeback stopped; cache retained: " << m_error << std::endl;
+-+			return;
+-+		}
+-+	}
+-+}
+-+
+-+bool MtpWriteback::finish()
+-+{
+-+	stop();
+-+	try
+-+	{
+-+		check();
+-+		publish(true);
+-+		if (!status()) return false;
+-+		MtpRecovery::remove(m_directory + "/session.pending");
+-+		return true;
+-+	}
+-+	catch (const std::exception& error)
+-+	{
+-+		std::cerr << "MTP writeback shutdown failed; cache retained: " << error.what() << std::endl;
+-+		return false;
+-+	}
+-+}
+---- /dev/null
+-+++ b/src/MtpWriteback.h
+-@@ -0,0 +1,55 @@
+-+/*
+-+ * MtpWriteback.h
+-+ *
+-+ *      Based on jmtpfs by Jason Ferrara
+-+ *
+-+ * This software is free software; you can redistribute it and/or
+-+ * modify it under the terms of the GNU General Public License
+-+ * version 3 as published by the Free Software Foundation.
+-+ *
+-+ * This software is distributed in the hope that it will be useful,
+-+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+-+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+-+ * General Public License for more details.
+-+ *
+-+ * You should have received a copy of the GNU General Public
+-+ * License along with this library; if not, write to the
+-+ * Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+-+ * Boston, MA 02111-1301, USA.
+-+ * licensing@fsf.org
+-+ */
+-+
+-+#ifndef MTPWRITEBACK_H_
+-+#define MTPWRITEBACK_H_
+-+
+-+#include "MtpMetadataCache.h"
+-+#include <atomic>
+-+#include <string>
+-+#include <thread>
+-+#include <mutex>
+-+
+-+// Owns publication scheduling and shutdown, not metadata lookup or USB transport.
+-+// Namespace transactions are serialized, while cached handle I/O operates on
+-+// live file versions independently of USB publication snapshots.
+-+class MtpWriteback
+-+{
+-+public:
+-+	explicit MtpWriteback(MtpMetadataCache& cache);
+-+	~MtpWriteback();
+-+	void check() const;
+-+	bool finish();
+-+
+-+private:
+-+	void run();
+-+	void stop();
+-+	void publish(bool drain);
+-+	bool status();
+-+	MtpMetadataCache& m_cache;
+-+	std::string m_directory;
+-+	std::string m_previousStatus;
+-+	std::string m_error;
+-+	mutable std::mutex m_errorMutex;
+-+	std::atomic<bool> m_stop{false};
+-+	std::thread m_thread;
+-+};
+-+#endif
+---- a/src/jmtpfs.cpp
+-+++ b/src/jmtpfs.cpp
+-@@ -28,6 +28,7 @@
+- 
+- #include <iostream>
+- #include <cstddef>
+-+#include "MtpFile.h"
+- #include <cstdint>
+- #include <fcntl.h>
+- #include <errno.h>
+-@@ -40,19 +41,18 @@
+- 
+- using namespace std;
+- 
+--/*
+-- * A global lock for filesystem operations. I really didn't want to do this, but trying to keep everything
+-- * in sync when different threads accessed the same nodes in the filesystem was getting way to complicated.
+-- * So for now just to get something working I've pulled out all the lower level synchronization code and
+-- * we'll just use the global lock here.
+-- */
+--RecursiveMutex	globalLock;
+--
+--#define FUSE_ERROR_BLOCK_START \
+-+// Namespace lookup/mutations and remote object publication are serialized.
+-+// Open-handle data operations use only their shared local file's lock.
+-+RecursiveMutex	namespaceLock;
+-+
+-+#define FUSE_LOCAL_BLOCK_START \
+- 	try \
+- 	{ \
+--	LockMutex lock(globalLock); \
+- 	    MtpFuseContext* context((MtpFuseContext*)(fuse_get_context()->private_data)); \
+-+
+-+#define FUSE_ERROR_BLOCK_START \
+-+	FUSE_LOCAL_BLOCK_START \
+-+	LockMutex namespaceGuard(namespaceLock);
+- 
+- #define FUSE_ERROR_BLOCK_END \
+- 	} \
+-@@ -68,8 +68,9 @@
+- 	{ \
+- 		return -(e.ErrorCode()); \
+- 	} \
+--	catch(std::exception&) \
+-+	catch(std::exception& e) \
+- 	{ \
+-+		std::cerr << "MTP filesystem operation failed: " << e.what() << std::endl; \
+- 		return -EIO; \
+- 	}
+- 
+-@@ -77,16 +78,17 @@
+- 
+- extern "C" int jmtpfs_getattr(const char* pathStr, struct stat* info)
+- {
+--	FUSE_ERROR_BLOCK_START
+--
+--		FilesystemPath path(pathStr);
+--		context->getNode(path)->getattr(*info);
+--		info->st_uid = context->uid();
+--		info->st_gid = context->gid();
+--		return 0;
+--
+--	FUSE_ERROR_BLOCK_END
+--
+-+	FUSE_LOCAL_BLOCK_START
+-+	if (auto file = context->cachedFile(pathStr)) file->attributes(*info);
+-+	else
+-+	{
+-+		LockMutex namespaceGuard(namespaceLock);
+-+		context->getNode(FilesystemPath(pathStr))->getattr(*info);
+-+	}
+-+	info->st_uid = context->uid();
+-+	info->st_gid = context->gid();
+-+	return 0;
+-+	FUSE_ERROR_BLOCK_END
+- }
+- 
+- extern "C" int jmtpfs_readdir(const char* pathStr, void* buf, fuse_fill_dir_t filler,
+-@@ -110,46 +112,48 @@
+- }
+- 
+- 
+--static MtpNode* openedFile(struct fuse_file_info* info)
+--{
+--	return reinterpret_cast<MtpNode*>(static_cast<uintptr_t>(info->fh));
+--}
+--
+--extern "C" int jmtpfs_open(const char *pathStr, struct fuse_file_info *info)
+-+static MtpLocalFileCopy* openedFile(struct fuse_file_info* info)
+-+{
+-+	return reinterpret_cast<std::shared_ptr<MtpLocalFileCopy>*>(static_cast<uintptr_t>(info->fh))->get();
+-+}
+-+
+-+extern "C" int jmtpfs_open(const char* pathStr, struct fuse_file_info* info)
+-+{
+-+	FUSE_LOCAL_BLOCK_START
+-+	auto file = context->cachedFile(pathStr);
+-+	if (!file)
+-+	{
+-+		LockMutex namespaceGuard(namespaceLock);
+-+		auto node = context->getNode(FilesystemPath(pathStr));
+-+		node->Open();
+-+		file = static_cast<MtpFile*>(node.get())->localFile();
+-+		context->rememberFile(pathStr, file);
+-+	}
+-+	info->fh = reinterpret_cast<uintptr_t>(new std::shared_ptr<MtpLocalFileCopy>(file));
+-+	return 0;
+-+	FUSE_ERROR_BLOCK_END
+-+}
+-+
+-+extern "C" int jmtpfs_release(const char*, struct fuse_file_info* info)
+-+{
+-+	delete reinterpret_cast<std::shared_ptr<MtpLocalFileCopy>*>(static_cast<uintptr_t>(info->fh));
+-+	return 0;
+-+}
+-+
+-+extern "C" int jmtpfs_read(const char *, char *buf, size_t size, off_t offset, struct fuse_file_info *info)
+-+{
+-+	FUSE_LOCAL_BLOCK_START
+-+
+-+	return openedFile(info)->readAt(buf, size, offset);
+-+
+-+	FUSE_ERROR_BLOCK_END
+-+}
+-+
+-+extern "C" int jmtpfs_mkdir(const char* pathStr, mode_t mode)
+- {
+- 	FUSE_ERROR_BLOCK_START
+--
+--	FilesystemPath path(pathStr);
+--	std::unique_ptr<MtpNode> node = context->getNode(path);
+--	node->Open();
+--	info->fh = reinterpret_cast<uintptr_t>(node.release());
+--	return 0;
+--
+--	FUSE_ERROR_BLOCK_END
+--}
+--
+--extern "C" int jmtpfs_release(const char *, struct fuse_file_info *info)
+--{
+--	FUSE_ERROR_BLOCK_START
+--
+--	delete openedFile(info);
+--	return 0;
+--
+--	FUSE_ERROR_BLOCK_END
+--}
+--
+--extern "C" int jmtpfs_read(const char *, char *buf, size_t size, off_t offset, struct fuse_file_info *info)
+--{
+--	FUSE_ERROR_BLOCK_START
+--
+--	return openedFile(info)->Read(buf, size, offset);
+--
+--	FUSE_ERROR_BLOCK_END
+--}
+--
+--extern "C" int jmtpfs_mkdir(const char* pathStr, mode_t mode)
+--{
+--	FUSE_ERROR_BLOCK_START
+-+	context->checkWriteback();
+-+	context->forgetPath(pathStr);
+- 
+- 	FilesystemPath path(pathStr);
+- 	context->getNode(path.AllButTail())->mkdir(path.Tail());
+-@@ -161,6 +165,8 @@
+- extern "C" int jmtpfs_rmdir(const char* pathStr)
+- {
+- 	FUSE_ERROR_BLOCK_START
+-+	context->checkWriteback();
+-+	context->forgetPath(pathStr);
+- 
+- 	FilesystemPath path(pathStr);
+- 	context->getNode(path)->Remove();
+-@@ -173,13 +179,17 @@
+- extern "C" int jmtpfs_create(const char* pathStr, mode_t mode, struct fuse_file_info *fileInfo)
+- {
+- 	FUSE_ERROR_BLOCK_START
+-+	context->checkWriteback();
+-+	context->forgetPath(pathStr);
+- 
+- 	FilesystemPath path(pathStr);
+- 	std::unique_ptr<MtpNode> n = context->getNode(path.AllButTail());
+- 	n->CreateFile(path.Tail());
+- 	n = context->getNode(path);
+- 	n->Open();
+--	fileInfo->fh = reinterpret_cast<uintptr_t>(n.release());
+-+	auto file = static_cast<MtpFile*>(n.get())->localFile();
+-+	context->rememberFile(pathStr, file);
+-+	fileInfo->fh = reinterpret_cast<uintptr_t>(new std::shared_ptr<MtpLocalFileCopy>(file));
+- 	return 0;
+- 
+- 	FUSE_ERROR_BLOCK_END
+-@@ -187,33 +197,38 @@
+- 
+- extern "C" int jmtpfs_write(const char *, const char *data, size_t size, off_t offset, struct fuse_file_info *info)
+- {
+-+	FUSE_LOCAL_BLOCK_START
+-+	context->checkWriteback();
+-+
+-+	return openedFile(info)->writeAt(data, size, offset, info->flags & O_APPEND);
+-+
+-+	FUSE_ERROR_BLOCK_END
+-+}
+-+
+-+extern "C" int jmtpfs_truncate(const char *pathStr, off_t length)
+-+{
+-+	FUSE_LOCAL_BLOCK_START
+-+	context->checkWriteback();
+-+	if (auto file = context->cachedFile(pathStr))
+-+	{
+-+		file->truncate(length);
+-+		file->persist();
+-+	}
+-+	else
+-+	{
+-+		LockMutex namespaceGuard(namespaceLock);
+-+		context->getNode(FilesystemPath(pathStr))->Truncate(length);
+-+	}
+-+	return 0;
+-+
+-+	FUSE_ERROR_BLOCK_END
+-+}
+-+
+-+extern "C" int jmtpfs_unlink(const char *pathStr)
+-+{
+- 	FUSE_ERROR_BLOCK_START
+--
+--	if (info->flags & O_APPEND)
+--	{
+--		struct stat attrs;
+--		openedFile(info)->getattr(attrs);
+--		offset = attrs.st_size;
+--	}
+--	return openedFile(info)->Write(data, size, offset);
+--
+--	FUSE_ERROR_BLOCK_END
+--}
+--
+--extern "C" int jmtpfs_truncate(const char *pathStr, off_t length)
+--{
+--	FUSE_ERROR_BLOCK_START
+--
+--	FilesystemPath path(pathStr);
+--	context->getNode(path)->Truncate(length);
+--	return 0;
+--
+--	FUSE_ERROR_BLOCK_END
+--}
+--
+--extern "C" int jmtpfs_unlink(const char *pathStr)
+--{
+--	FUSE_ERROR_BLOCK_START
+-+	context->checkWriteback();
+-+	context->forgetPath(pathStr);
+- 
+- 	FilesystemPath path(pathStr);
+- 	context->getNode(path)->Remove();
+-@@ -224,9 +239,10 @@
+- 
+- extern "C" int jmtpfs_flush(const char *, struct fuse_file_info *info)
+- {
+--	FUSE_ERROR_BLOCK_START
+--
+--	openedFile(info)->Fsync();
+-+	FUSE_LOCAL_BLOCK_START
+-+	context->checkWriteback();
+-+
+-+	openedFile(info)->persist();
+- 	return 0;
+- 
+- 	FUSE_ERROR_BLOCK_END
+-@@ -235,24 +251,26 @@
+- 
+- extern "C" int jmtpfs_fsync(const char *, int, struct fuse_file_info *info)
+- {
+--	FUSE_ERROR_BLOCK_START
+--	openedFile(info)->Fsync();
+-+	FUSE_LOCAL_BLOCK_START
+-+	context->checkWriteback();
+-+	openedFile(info)->persist();
+- 	return 0;
+- 	FUSE_ERROR_BLOCK_END
+- }
+- 
+- extern "C" int jmtpfs_ftruncate(const char *, off_t length, struct fuse_file_info *info)
+- {
+--	FUSE_ERROR_BLOCK_START
+--	openedFile(info)->Truncate(length);
+-+	FUSE_LOCAL_BLOCK_START
+-+	context->checkWriteback();
+-+	openedFile(info)->truncate(length);
+- 	return 0;
+- 	FUSE_ERROR_BLOCK_END
+- }
+- 
+- extern "C" int jmtpfs_fgetattr(const char *, struct stat* attrs, struct fuse_file_info *info)
+- {
+--	FUSE_ERROR_BLOCK_START
+--	openedFile(info)->getattr(*attrs);
+-+	FUSE_LOCAL_BLOCK_START
+-+	openedFile(info)->attributes(*attrs);
+- 	attrs->st_uid = context->uid();
+- 	attrs->st_gid = context->gid();
+- 	return 0;
+-@@ -262,6 +280,9 @@
+- extern "C" int jmtpfs_rename(const char *pathStr, const char *newPathStr)
+- {
+- 	FUSE_ERROR_BLOCK_START
+-+	context->checkWriteback();
+-+	context->forgetPath(pathStr);
+-+	context->forgetPath(newPathStr);
+- 
+- 	FilesystemPath path(pathStr);
+- 	std::unique_ptr<MtpNode> n = context->getNode(path);
+-@@ -281,11 +302,11 @@
+- 
+- extern "C" int jmtpfs_statfs(const char *pathStr, struct statvfs *stat)
+- {
+--	FUSE_ERROR_BLOCK_START
+--
+--	FilesystemPath path(pathStr);
+--	std::unique_ptr<MtpNode> n = context->getNode(path);
+--	n->statfs(stat);
+-+	FUSE_LOCAL_BLOCK_START
+-+
+-+	// Finder asks for capacity while a transfer is active. Return the latest
+-+	// discovery snapshot without queuing behind a whole-object USB upload.
+-+	context->statfs(FilesystemPath(pathStr), *stat);
+- 	return 0;
+- 
+- 	FUSE_ERROR_BLOCK_END
+-@@ -293,10 +314,12 @@
+- 
+- extern "C" int jmtpfs_chmod(const char* pathStr, mode_t mode)
+- {
+--	FUSE_ERROR_BLOCK_START
+--
+--	FilesystemPath path(pathStr);
+--	context->getNode(path);
+-+	FUSE_LOCAL_BLOCK_START
+-+	if (!context->cachedFile(pathStr))
+-+	{
+-+		LockMutex namespaceGuard(namespaceLock);
+-+		context->getNode(FilesystemPath(pathStr));
+-+	}
+- 	// a noop since mtp doesn't support permissions. But we need to pretend
+-     // to do it to make things like "cp -r" and the mac finder happy.
+- 
+-@@ -306,10 +329,12 @@
+- 
+- extern "C" int jmtpfs_utime(const char* pathStr, struct utimbuf*)
+- {
+--	FUSE_ERROR_BLOCK_START
+--
+--	FilesystemPath path(pathStr);
+--	context->getNode(path);
+-+	FUSE_LOCAL_BLOCK_START
+-+	if (!context->cachedFile(pathStr))
+-+	{
+-+		LockMutex namespaceGuard(namespaceLock);
+-+		context->getNode(FilesystemPath(pathStr));
+-+	}
+- 	// a noop since mtp doesn't support permissions. But we need to pretend
+-     // to do it to make things like "cp -r" and the mac finder happy.
+- 
+-@@ -522,6 +547,7 @@
+- 	if (fuse_opt_add_arg(&args, "-ohard_remove") == -1)
+- 		return -1;
+- 	int result = fuse_main(args.argc, args.argv, &jmtpfs_oper, context.get());
+-+	if (context && !context->finish()) result = 1;
+- 
+- 	if (options.displayHelp)
+- 	{
+diff --git a/scripts/jmtpfs-writeback.patch b/scripts/jmtpfs-writeback.patch
+deleted file mode 100644
+index baee582..0000000
+--- a/scripts/jmtpfs-writeback.patch
++++ /dev/null
+@@ -1,324 +0,0 @@
+---- a/src/MtpDevice.cpp
+-+++ b/src/MtpDevice.cpp
+-@@ -19,6 +19,7 @@
+-  * licensing@fsf.org
+-  */
+- #include "MtpDevice.h"
+-+#include "mtpFilesystemErrors.h"
+- #include "MtpLibLock.h"
+- #include "ConnectedMtpDevices.h"
+- #include <sys/stat.h>
+-@@ -221,7 +222,7 @@
+- 		CheckErrors(true);
+- }
+- 
+--void MtpDevice::SendFile(LIBMTP_file_t* destination, int fd)
+-+void MtpDevice::PrepareFile(LIBMTP_file_t* destination, int fd)
+- {
+- MtpLibLock lock;
+- 
+-@@ -245,12 +246,26 @@
+- 	}
+- 	if (mimeType)
+- 		destination->filetype = PropertyTypeFromMimeType(mimeType);
+--
+-+}
+-+
+-+void MtpDevice::SendFile(LIBMTP_file_t* destination, int fd)
+-+{
+-+MtpLibLock lock;
+- 
+- 	if (LIBMTP_Send_File_From_File_Descriptor(m_mtpdevice, fd, destination, 0,0))
+- 		CheckErrors(true);
+- }
+- 
+-+
+-+void MtpDevice::RequireFileRename(LIBMTP_filetype_t type)
+-+{
+-+	MtpLibLock lock;
+-+	int supported = LIBMTP_Is_Property_Supported(m_mtpdevice, LIBMTP_PROPERTY_ObjectFileName, type);
+-+	if (supported < 0)
+-+		CheckErrors(true);
+-+	if (!supported)
+-+		throw MtpFilesystemErrorWithErrorCode(EOPNOTSUPP, "Device does not support object filenames");
+-+}
+- 
+- void MtpDevice::RenameFile(uint32_t id, const std::string& newName)
+- {
+-@@ -359,9 +374,6 @@
+- 		return LIBMTP_FILETYPE_OGG;
+- 	if (mimeType == "audio/mpeg")
+- 		return LIBMTP_FILETYPE_MP3;
+--	if (mimeType == "")
+--
+--
+- 	if (mimeType.substr(0,5) == "text/")
+- 		return LIBMTP_FILETYPE_TEXT;
+- 	if (mimeType.substr(0,6) == "video/")
+---- a/src/MtpDevice.h
+-+++ b/src/MtpDevice.h
+-@@ -131,9 +131,11 @@
+- 	std::vector<MtpFileInfo> GetFolderContents(uint32_t storageId, uint32_t folderId);
+- 	MtpFileInfo GetFileInfo(uint32_t id);
+- 	void GetFile(uint32_t id, int fd);
+-+	void PrepareFile(LIBMTP_file_t* destination, int fd);
+- 	void SendFile(LIBMTP_file_t* destination, int fd);
+- 	void CreateFolder(const std::string& name, uint32_t parentId, uint32_t storageId);
+- 	void DeleteObject(uint32_t id);
+-+	void RequireFileRename(LIBMTP_filetype_t type);
+- 	void RenameFile(uint32_t id, const std::string& newName);
+- 	void SetObjectProperty(uint32_t id, LIBMTP_property_t property, const std::string& value);
+- 	static LIBMTP_filetype_t PropertyTypeFromMimeType(const std::string& mimeType);
+---- a/src/MtpLocalFileCopy.cpp
+-+++ b/src/MtpLocalFileCopy.cpp
+-@@ -23,13 +23,50 @@
+- #include <sys/stat.h>
+- #include <iostream>
+- #include <unistd.h>
+-+#include <fcntl.h>
+-+#include <cstdlib>
+-+#include <memory>
+-+#include <sstream>
+-+
+-+// Names from the device are hex encoded so recovery records remain line oriented.
+-+static std::string hexName(const std::string& name)
+-+{
+-+	const char* digits = "0123456789abcdef";
+-+	std::string result;
+-+	for (unsigned char byte : name)
+-+	{
+-+		result += digits[byte >> 4];
+-+		result += digits[byte & 15];
+-+	}
+-+	return result;
+-+}
+- 
+- MtpLocalFileCopy::MtpLocalFileCopy(MtpDevice& device, uint32_t id) :
+--	m_device(device), m_remoteId(id), m_needWriteBack(false)
+--{
+--	m_localFile = tmpfile();
+--	if (m_localFile == 0)
+-+	m_device(device), m_remoteId(id), m_stage(Clean), m_replacementId(0)
+-+{
+-+	const char* directory = getenv("JMTPFS_WRITEBACK_DIR");
+-+	m_directory = directory ? directory : "/tmp/mtp-writeback";
+-+	if (mkdir(m_directory.c_str(), 0700) && errno != EEXIST)
+- 		throw CantCreateTempFile(errno);
+-+	std::string pattern = m_directory + "/cache-XXXXXX";
+-+	std::vector<char> name(pattern.begin(), pattern.end());
+-+	name.push_back(0);
+-+	int fd = mkstemp(name.data());
+-+	if (fd < 0)
+-+		throw CantCreateTempFile(errno);
+-+	m_cachePath = name.data();
+-+	m_recordPath = m_cachePath + ".record";
+-+	std::string suffix = m_cachePath.substr(m_cachePath.find_last_of('/') + 1);
+-+	m_uploadName = ".alfs-upload-" + suffix;
+-+	m_backupName = ".alfs-backup-" + suffix;
+-+	m_localFile = fdopen(fd, "w+");
+-+	if (!m_localFile)
+-+	{
+-+		int error = errno;
+-+		close(fd);
+-+		unlink(m_cachePath.c_str());
+-+		throw CantCreateTempFile(error);
+-+	}
+- 	try
+- 	{
+- 		m_device.GetFile(m_remoteId, fileno(m_localFile));
+-@@ -37,33 +74,113 @@
+- 	catch (...)
+- 	{
+- 		fclose(m_localFile);
+-+		unlink(m_cachePath.c_str());
+- 		throw;
+- 	}
+--
+- }
+- 
+- MtpLocalFileCopy::~MtpLocalFileCopy()
+- {
+- 	fclose(m_localFile);
+-+	if (!dirty() && unlink(m_cachePath.c_str()))
+-+		std::cerr << "Remove MTP cache " << m_cachePath << ": " << strerror(errno) << std::endl;
+-+}
+-+
+-+void MtpLocalFileCopy::syncDirectory()
+-+{
+-+	int fd = open(m_directory.c_str(), O_RDONLY | O_DIRECTORY);
+-+	if (fd < 0)
+-+		throw WriteError(errno);
+-+	int result = fsync(fd);
+-+	int error = errno;
+-+	close(fd);
+-+	if (result)
+-+		throw WriteError(error);
+-+}
+-+
+-+void MtpLocalFileCopy::record(Stage stage)
+-+{
+-+	m_stage = stage;
+-+	static const char* stages[] = { "clean", "dirty", "uploading", "backing-up",
+-+		"publishing", "cleaning-up", "complete" };
+-+	std::ostringstream text;
+-+	text << "version=1\n" << "stage=" << stages[stage] << "\n"
+-+		<< "original_id=" << m_remoteId << "\n"
+-+		<< "replacement_id=" << m_replacementId << "\n"
+-+		<< "parent_id=" << m_target.parentId << "\n"
+-+		<< "storage_id=" << m_target.storageId << "\n"
+-+		<< "target_name_hex=" << hexName(m_target.name) << "\n"
+-+		<< "upload_name_hex=" << hexName(m_uploadName) << "\n"
+-+		<< "backup_name_hex=" << hexName(m_backupName) << "\n";
+-+	std::string next = m_recordPath + ".next";
+-+	std::unique_ptr<FILE, int (*)(FILE*)> output(fopen(next.c_str(), "w"), fclose);
+-+	if (!output)
+-+		throw WriteError(errno);
+-+	std::string content = text.str();
+-+	if (fwrite(content.data(), 1, content.size(), output.get()) != content.size()
+-+		|| fflush(output.get()) || fsync(fileno(output.get())))
+-+		throw WriteError(errno);
+-+	if (rename(next.c_str(), m_recordPath.c_str()))
+-+		throw WriteError(errno);
+-+	syncDirectory();
+-+}
+-+
+-+void MtpLocalFileCopy::syncData()
+-+{
+-+	if (fflush(m_localFile) || fsync(fileno(m_localFile)))
+-+		throw WriteError(errno);
+-+}
+-+
+-+void MtpLocalFileCopy::beginWrite()
+-+{
+-+	if (m_stage == Clean)
+-+	{
+-+		m_target = m_device.GetFileInfo(m_remoteId);
+-+		m_replacementId = 0;
+-+		syncData();
+-+		record(Dirty);
+-+	}
+-+	else if (m_stage != Dirty)
+-+		throw MtpFilesystemErrorWithErrorCode(EIO, "MTP writeback requires recovery: " + m_recordPath);
+- }
+- 
+- void MtpLocalFileCopy::sync()
+- {
+--	if (!m_needWriteBack)
+-+	if (m_stage == Clean)
+- 		return;
+--	if (fflush(m_localFile))
+--		throw WriteError(errno);
+--	if (fseek(m_localFile, 0, SEEK_SET))
+--		throw WriteError(errno);
+--	struct stat tempInfo;
+--	if (fstat(fileno(m_localFile), &tempInfo))
+--		throw ReadError(errno);
+--	MtpFileInfo remoteInfo = m_device.GetFileInfo(m_remoteId);
+--	NewLIBMTPFile newFile(remoteInfo.name, remoteInfo.parentId, remoteInfo.storageId, tempInfo.st_size);
+-+	if (m_stage != Dirty)
+-+		throw MtpFilesystemErrorWithErrorCode(EIO, "MTP writeback requires recovery: " + m_recordPath);
+-+	syncData();
+-+	NewLIBMTPFile newFile(m_uploadName, m_target.parentId, m_target.storageId, getSize());
+-+	m_device.PrepareFile(newFile, fileno(m_localFile));
+-+	LIBMTP_filetype_t uploadType = ((LIBMTP_file_t*)newFile)->filetype;
+-+	m_device.RequireFileRename(uploadType);
+-+	if (m_target.id && m_target.filetype != uploadType)
+-+		m_device.RequireFileRename(m_target.filetype);
+-+	record(Uploading);
+-+	try
+-+	{
+-+		m_device.SendFile(newFile, fileno(m_localFile));
+-+	}
+-+	catch (...)
+-+	{
+-+		// libmtp may allocate an object ID before its payload transfer fails.
+-+		m_replacementId = ((LIBMTP_file_t*)newFile)->item_id;
+-+		record(Uploading);
+-+		throw;
+-+	}
+-+	m_replacementId = ((LIBMTP_file_t*)newFile)->item_id;
+-+	record(BackingUp);
+-+	m_device.RenameFile(m_remoteId, m_backupName);
+-+	record(Publishing);
+-+	m_device.RenameFile(m_replacementId, m_target.name);
+-+	record(CleaningUp);
+- 	m_device.DeleteObject(m_remoteId);
+--	m_device.SendFile(newFile, fileno(m_localFile));
+--	m_remoteId = ((LIBMTP_file_t*)newFile)->item_id;
+--	m_needWriteBack = false;
+-+	record(Complete);
+-+	if (unlink(m_recordPath.c_str()))
+-+		throw WriteError(errno);
+-+	m_remoteId = m_replacementId;
+-+	m_stage = Clean;
+- }
+- 
+- off_t MtpLocalFileCopy::getSize()
+-@@ -84,11 +201,13 @@
+- 
+- size_t MtpLocalFileCopy::write(const void* ptr, size_t size)
+- {
+-+	beginWrite();
+- 	size_t wroteBytes = fwrite(ptr, 1, size, m_localFile);
+--	m_needWriteBack = true;
+- 	if (wroteBytes!= size)
+- 		if (ferror(m_localFile))
+- 			throw WriteError(errno);
+-+	if (fflush(m_localFile))
+-+		throw WriteError(errno);
+- 	return wroteBytes;
+- }
+- 
+-@@ -104,9 +223,9 @@
+- 
+- void MtpLocalFileCopy::truncate(off_t length)
+- {
+-+	beginWrite();
+- 	if (ftruncate(fileno(m_localFile), length))
+- 		throw WriteError(errno);
+--	m_needWriteBack = true;
+- }
+- 
+- void MtpLocalFileCopy::CopyTo(MtpDevice& device, NewLIBMTPFile& destination)
+-@@ -119,5 +238,6 @@
+- 	if (fstat(fileno(m_localFile), &tempInfo))
+- 			throw ReadError(errno);
+- 
+-+	device.PrepareFile(destination, fileno(m_localFile));
+- 	device.SendFile(destination, fileno(m_localFile));
+- }
+---- a/src/MtpLocalFileCopy.h
+-+++ b/src/MtpLocalFileCopy.h
+-@@ -33,8 +33,9 @@
+- 	// Synchronization leaves the local copy open for all existing handles.
+- 	void sync();
+- 	uint32_t id() const { return m_remoteId; }
+-+	uint32_t parentId() const { return m_target.parentId ? m_target.parentId : m_target.storageId; }
+- 	void setId(uint32_t id) { m_remoteId = id; }
+--	bool dirty() const { return m_needWriteBack; }
+-+	bool dirty() const { return m_stage != Clean; }
+- 
+- 	off_t getSize();
+- 
+-@@ -52,7 +53,20 @@
+- 	MtpDevice&			m_device;
+- 	FILE*				m_localFile;
+- 	uint32_t			m_remoteId;
+--	bool				m_needWriteBack;
+-+	enum Stage { Clean, Dirty, Uploading, BackingUp, Publishing, CleaningUp, Complete };
+-+	void beginWrite();
+-+	void syncData();
+-+	void record(Stage stage);
+-+	void syncDirectory();
+-+
+-+	Stage m_stage;
+-+	MtpFileInfo m_target;
+-+	uint32_t m_replacementId;
+-+	std::string m_directory;
+-+	std::string m_cachePath;
+-+	std::string m_recordPath;
+-+	std::string m_uploadName;
+-+	std::string m_backupName;
+- };
+- 
+- 
+diff --git a/scripts/prepare-mtp-guest.sh b/scripts/prepare-mtp-guest.sh
+index 3c2b7f0..28b776f 100755
+--- a/scripts/prepare-mtp-guest.sh
++++ b/scripts/prepare-mtp-guest.sh
+@@ -7,18 +7,16 @@ if [ "$(uname -s)" != Linux ] || [ ! -f /etc/alpine-release ]; then
+     exit 1
+ fi
+ 
+-revision=928fb8f2eec34232e3b2cecc121195caa8865e15
+-checksum=70ab6c8ebc737ef77af316cd068ba7bed9cecbf39faa7668e9f4d102a882e9a3
+ fuse_revision=fuse-2.9.9
+ fuse_checksum=e57a24721177c3b3dd71cb9239ca46b4dee283db9388d48f7ccd256184982194
+ mtp_version=1.1.22
+ mtp_checksum=c3fcf411aea9cb9643590cbc9df99fa5fe30adcac695024442973d76fa5f87bc
+ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+-work_dir=$(mktemp -d /tmp/alfs-jmtpfs.XXXXXX)
++work_dir=$(mktemp -d /tmp/alfs-mtpfs.XXXXXX)
+ trap 'rm -rf "$work_dir"' EXIT
+-apk add --no-cache fuse libmtp libmagic libstdc++
++apk add --no-cache fuse libmtp libstdc++ libcrypto3
+ apk add --no-cache --virtual .alfs-mtp-build build-base autoconf automake \
+-    pkgconf libtool gettext-dev libmtp-dev libusb-dev file-dev curl linux-headers patch
++    pkgconf libtool gettext-dev libmtp-dev libusb-dev openssl-dev curl linux-headers patch
+ trap 'rm -rf "$work_dir"; apk del .alfs-mtp-build' EXIT
+ # The bounded event API is private to this helper; leave Alpine's libmtp intact.
+ curl -fL "https://github.com/libmtp/libmtp/releases/download/v$mtp_version/libmtp-$mtp_version.tar.gz" \
+@@ -29,6 +27,7 @@ mtp_dir="$work_dir/libmtp-$mtp_version"
+ cd "$mtp_dir"
+ patch -p1 < "$script_dir/libmtp-bounded-events.patch"
+ patch -p1 < "$script_dir/libmtp-close-timeout.patch"
++patch -p1 < "$script_dir/libmtp-response-status.patch"
+ CC=/usr/bin/gcc ./configure --disable-shared --enable-static --disable-mtpz --disable-doxygen
+ make -C src -j"${ALFS_MTP_JOBS:-2}"
+ # Keep the concurrent open-handle fix private to this helper.
+@@ -43,41 +42,24 @@ autoreconf -fi
+ CC=/usr/bin/gcc ./configure --disable-shared --enable-static \
+     --disable-util --disable-example --disable-mtab
+ make -C lib -j"${ALFS_MTP_JOBS:-2}"
+-curl -fL "https://codeload.github.com/JasonFerrara/jmtpfs/tar.gz/$revision" \
+-    -o "$work_dir/source.tar.gz"
+-printf '%s  %s\n' "$checksum" "$work_dir/source.tar.gz" | sha256sum -c -
+-tar -xzf "$work_dir/source.tar.gz" -C "$work_dir"
+-cd "$work_dir/jmtpfs-$revision"
+-patch -p1 < "$script_dir/jmtpfs-stable-files.patch"
+-patch -p1 < "$script_dir/jmtpfs-writeback.patch"
+-patch -p1 < "$script_dir/jmtpfs-file-operations.patch"
+-patch -p1 < "$script_dir/jmtpfs-directory-transactions.patch"
+-patch -p1 < "$script_dir/jmtpfs-events.patch"
+-patch -p1 < "$script_dir/jmtpfs-writeback-queue.patch"
+-autoreconf -fi
+-# Absolute compiler paths let GCC locate cc1/cc1plus in the guest.
+-FUSE_CFLAGS="-I$fuse_dir/include -D_FILE_OFFSET_BITS=64" \
+-FUSE_LIBS="$fuse_dir/lib/.libs/libfuse.a -pthread -ldl -lrt" \
+-MTP_CFLAGS="-I$mtp_dir/src" \
+-MTP_LIBS="$mtp_dir/src/.libs/libmtp.a $(pkg-config --libs libusb-1.0)" \
+-CC=/usr/bin/gcc CXX=/usr/bin/g++ ./configure --prefix=/usr/local
+-make -j"${ALFS_MTP_JOBS:-2}"
++source_dir="$script_dir/../mtpfs"
++cp -R "$source_dir" "$work_dir/mtpfs"
++cd "$work_dir/mtpfs"
++make clean
++make -j"${ALFS_MTP_JOBS:-1}" \
++    FUSE_CFLAGS="-I$fuse_dir/include" \
++    FUSE_LIBS="$fuse_dir/lib/.libs/libfuse.a -pthread -ldl -lrt" \
++    MTP_CFLAGS="-I$mtp_dir/src" \
++    MTP_LIBS="$mtp_dir/src/.libs/libmtp.a $(pkg-config --libs libusb-1.0)"
+ mkdir -p /usr/local/libexec/anylinuxfs
+-install -m 755 src/jmtpfs /usr/local/libexec/anylinuxfs/jmtpfs-writeback
+-mkdir -p /usr/local/share/licenses/jmtpfs
+-cp COPYING /usr/local/share/licenses/jmtpfs/COPYING
+-cp "$fuse_dir/COPYING.LIB" /usr/local/share/licenses/jmtpfs/libfuse-COPYING.LIB
+-cp "$mtp_dir/COPYING" /usr/local/share/licenses/jmtpfs/libmtp-COPYING
+-cp "$script_dir/libmtp-bounded-events.patch" /usr/local/share/licenses/jmtpfs/
+-cp "$script_dir/libmtp-close-timeout.patch" /usr/local/share/licenses/jmtpfs/
+-cp "$script_dir/jmtpfs-events.patch" /usr/local/share/licenses/jmtpfs/
+-cp "$script_dir/jmtpfs-fuse-open-handles.patch" /usr/local/share/licenses/jmtpfs/
+-cp "$script_dir/jmtpfs-stable-files.patch" /usr/local/share/licenses/jmtpfs/
+-cp "$script_dir/jmtpfs-writeback.patch" /usr/local/share/licenses/jmtpfs/
+-cp "$script_dir/jmtpfs-file-operations.patch" /usr/local/share/licenses/jmtpfs/
+-cp "$script_dir/jmtpfs-directory-transactions.patch" /usr/local/share/licenses/jmtpfs/
+-cp "$script_dir/jmtpfs-writeback-queue.patch" /usr/local/share/licenses/jmtpfs/
+-printf '%s\n' "$revision" > /usr/local/share/licenses/jmtpfs/source-revision
+-printf '%s\n' "$fuse_revision" > /usr/local/share/licenses/jmtpfs/libfuse-source-revision
+-printf '%s\n' "$mtp_version" > /usr/local/share/licenses/jmtpfs/libmtp-source-version
+-echo "MTP guest helper installed at /usr/local/libexec/anylinuxfs/jmtpfs-writeback"
++install -m 755 mtpfs /usr/local/libexec/anylinuxfs/mtpfs
++license_dir=/usr/local/share/licenses/anylinuxfs-mtpfs
++mkdir -p "$license_dir"
++cp "$source_dir/../LICENSE" "$license_dir/COPYING"
++cp "$fuse_dir/COPYING.LIB" "$license_dir/libfuse-COPYING.LIB"
++cp "$mtp_dir/COPYING" "$license_dir/libmtp-COPYING"
++cp "$script_dir/libmtp-bounded-events.patch" "$script_dir/libmtp-close-timeout.patch" \
++   "$script_dir/libmtp-response-status.patch" "$script_dir/jmtpfs-fuse-open-handles.patch" "$license_dir/"
++printf '%s\n' "$fuse_revision" > "$license_dir/libfuse-source-revision"
++printf '%s\n' "$mtp_version" > "$license_dir/libmtp-source-version"
++echo "MTP guest helper installed at /usr/local/libexec/anylinuxfs/mtpfs"
+diff --git a/vmproxy/src/main.rs b/vmproxy/src/main.rs
+index abfe3b4..f421d51 100644
+--- a/vmproxy/src/main.rs
++++ b/vmproxy/src/main.rs
+@@ -1507,7 +1507,14 @@ fn run() -> anyhow::Result<()> {
+         ignore_permissions,
+     )?;
+ 
+-    match Command::new("/usr/local/bin/entrypoint.sh").spawn() {
++    let mut nfs_server = Command::new("/usr/local/bin/entrypoint.sh");
++    if matches!(&source, MountSource::Mtp { .. }) {
++        // NFS workers can sleep on uncached phone reads. A single worker (the
++        // one-vCPU default) would prevent unrelated cached requests from
++        // reaching the concurrent filesystem frontend at all.
++        nfs_server.env("NFS_SERVER_THREAD_COUNT", "16");
++    }
++    match nfs_server.spawn() {
+         Ok(mut hnd) => {
+             ctrl_server.wait_for_quit_cmd();
+             println!("Exiting...");
+diff --git a/vmproxy/src/mtp.rs b/vmproxy/src/mtp.rs
+index b3c710c..5b7d15a 100644
+--- a/vmproxy/src/mtp.rs
++++ b/vmproxy/src/mtp.rs
+@@ -20,7 +20,7 @@ fn mount_ready(mountinfo: &str, mount_point: &str, mode: &str) -> bool {
+             && fields[5].split(',').any(|option| option == mode)
+             && matches!(
+                 filesystem.split_whitespace().next(),
+-                Some("fuse" | "fuse.jmtpfs")
++                Some("fuse" | "fuse.mtpfs")
+             )
+     })
+ }
+@@ -39,9 +39,9 @@ pub(crate) fn mount(
+         thread,
+         time::{Duration, Instant},
+     };
+-    const DRIVER: &str = "/usr/local/libexec/anylinuxfs/jmtpfs-writeback";
++    const DRIVER: &str = "/usr/local/libexec/anylinuxfs/mtpfs";
+     fs::metadata(DRIVER).context(
+-        "MTP writeback helper is missing; run scripts/prepare-mtp-guest.sh inside the Linux guest",
++        "MTP filesystem helper is missing; run scripts/prepare-mtp-guest.sh inside the Linux guest",
+     )?;
+     fs::metadata("/dev/fuse").context("Guest kernel needs CONFIG_FUSE_FS")?;
+ 
+@@ -50,16 +50,21 @@ pub(crate) fn mount(
+     // libfuse otherwise derives the subtype from the helper filename,
+     // which would no longer match the stable type checked by mount_ready.
+     let options = format!(
+-        "{mode},subtype=jmtpfs,allow_other,noforget,uid={},gid={}",
++        "{mode},subtype=mtpfs,allow_other,noforget,use_ino,hard_remove,big_writes,max_write=131072,uid={},gid={}",
+         owner.0, owner.1
+     );
+-    let child = Command::new(DRIVER)
+-        .args(["-f", "-o", &options])
++    let mut command = Command::new(DRIVER);
++    command.args(["-f", "-o", &options]);
++    command.arg(format!("--owner={},{}", owner.0, owner.1));
++    if read_only {
++        command.arg("--read-only");
++    }
++    let child = command
+         .env(
+-            "JMTPFS_WRITEBACK_DIR",
+-            std::path::Path::new("/tmp").join(common_utils::MTP_WRITEBACK_DIR),
++            "ALFS_MTP_CACHE",
++            std::path::Path::new("/tmp").join(common_utils::MTP_SESSION_DIR),
+         )
+-        .arg(format!("-device={},{}", device.bus, device.number))
++        .arg(format!("--device={},{}", device.bus, device.number))
+         .arg(mount_point)
+         .spawn()
+         .context("Start MTP filesystem")?;
+@@ -118,26 +123,26 @@ fn stop(child: &mut std::process::Child, mount_point: &str) {
+             }
+         }
+     };
+-    // fuse_main removes its signal handlers before the jmtpfs context closes
++    // fuse_main removes its signal handlers before the mtpfs context closes
+     // the MTP session. Once unmounted, let that cleanup finish without SIGTERM.
+-    // A normal unmount drains pending uploads. The generic five-second child
+-    // timeout would kill valid transfers, so only failed unmount/startup uses it.
++    // NFS has already flushed data. Finish outstanding editing sessions and
++    // release unlinked objects before closing USB; there is no upload queue.
+     let result = if unmounted {
+         child
+             .wait()
+-            .context("Wait for MTP writeback")
++            .context("Wait for MTP session shutdown")
+             .and_then(|status| {
+-                println!("jmtpfs exited with status: {status}");
++                println!("mtpfs exited with status: {status}");
+                 anyhow::ensure!(
+                     status.success(),
+-                    "MTP writeback failed: {status}; local cache retained"
++                    "MTP session failed: {status}; diagnostics retained"
+                 );
+                 Ok(())
+             })
+     } else {
+         match child.try_wait() {
+             Ok(Some(_)) => Ok(()),
+-            Ok(None) => crate::terminate_child(child, "jmtpfs"),
++            Ok(None) => crate::terminate_child(child, "mtpfs"),
+             Err(error) => Err(error).context("Check MTP helper status"),
+         }
+     };
+@@ -163,7 +168,7 @@ mod tests {
+ 
+     #[test]
+     fn readiness_requires_requested_mode_and_fuse_at_exact_mount_point() {
+-        let line = "31 20 0:33 / /mnt/My\\040Phone ro,nosuid - fuse.jmtpfs jmtpfs rw,user_id=0";
++        let line = "31 20 0:33 / /mnt/My\\040Phone ro,nosuid - fuse.mtpfs mtpfs rw,user_id=0";
+         assert!(mount_ready(line, "/mnt/My Phone", "ro"));
+         assert!(!mount_ready(line, "/mnt/My", "ro"));
+         assert!(!mount_ready(
+@@ -177,7 +182,7 @@ mod tests {
+             "rw"
+         ));
+         assert!(!mount_ready(
+-            &line.replace("fuse.jmtpfs", "virtiofs"),
++            &line.replace("fuse.mtpfs", "virtiofs"),
+             "/mnt/My Phone",
+             "ro"
+         ));

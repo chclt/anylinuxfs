@@ -1,0 +1,124 @@
+{
+  "date": "2026-11-17",
+  "device": "Samsung Z Fold6",
+  "status": "isolated prototype validated; not integrated or committed",
+  "driver_sha256": "c72d4e0b994a2b617ce0e7c0beff8ee0a3364129e5882d759d2bff9d30ec7215",
+  "implementation": [
+    "On-demand successful directory snapshots and attribute queries expire after 3 seconds; FUSE entry and attr timeout 1 second.",
+    "Only directories already enumerated are refreshed on getattr; no recursive/background tree scan.",
+    "Detected name/object-ID differences update local directory change timestamp, including changes within one phone timestamp second.",
+    "Readdir uses stable inode-based cookies sorted by cookie, rather than byte offsets in a name-sorted encoded cache.",
+    "Fresh metadata is assembled before publishing directory cache; active Android edits retain acknowledged local sizes.",
+    "Independent NFS export support and lookup . / .. let the kernel reconstruct existing file handles after inode eviction.",
+    "ReadDir diagnostic now includes inode and offset."
+  ],
+  "finder_validation": {
+    "path": "Internal storage/Download",
+    "no_terminal_directory_polling_during_phone_changes": true,
+    "create_visible": true,
+    "rename_visible_old_name_absent": true,
+    "delete_visible": true,
+    "reconnect_or_manual_refresh_required": false,
+    "latency": "not precisely measured; observed via accessibility snapshots after user confirmations"
+  },
+  "pagination": {
+    "started": 1794911467.1176279,
+    "checks": [
+      {
+        "iteration": 0,
+        "count": 480,
+        "unique": 480
+      },
+      {
+        "iteration": 1,
+        "count": 480,
+        "unique": 480
+      },
+      {
+        "iteration": 2,
+        "count": 480,
+        "unique": 480
+      }
+    ],
+    "mutation_check": {
+      "seen": 480,
+      "unique": 480,
+      "unaffected_files": 238,
+      "all_unaffected_present": true
+    }
+  },
+  "cold_cache": {
+    "started": 1794911603.517772,
+    "rounds": [
+      {
+        "round": 0,
+        "seconds": 0.2114451250527054,
+        "entries": 480,
+        "size": 33554432
+      },
+      {
+        "round": 1,
+        "seconds": 0.026548249879851937,
+        "entries": 480,
+        "size": 33554432
+      }
+    ],
+    "guest_sha256": "00495905420ae650521c75cee0c7bfe7ae8e235fc26ec14e4ce660659845823e",
+    "status": "passed"
+  },
+  "overwrite": {
+    "seconds": 0.9361402499489486,
+    "size": 8388608,
+    "sha256": "706aa553da0b97339c6ea00b1d5f6380ac985b8a598331ab91be0ad39b77ebf2"
+  },
+  "cleanup": {
+    "removed_test_directory": "alfs-refresh-regression-20261117",
+    "seconds": 6.278164792107418,
+    "www_retained": true,
+    "phone_refresh_test_absent": true
+  },
+  "write_32MiB_seconds": 3.397344792028889,
+  "guest_fresh_read_32MiB": {
+    "returncode": 0,
+    "stdout": "{\"sha256\": \"00495905420ae650521c75cee0c7bfe7ae8e235fc26ec14e4ce660659845823e\", \"seconds\": 5.4427547110000205, \"size\": 33554432}\n",
+    "stderr": "",
+    "seconds": 5.56961991899999
+  },
+  "regression_correction": "First pagination assertion counted only 240 user files; macOS also created 240 AppleDouble files. Corrected enumeration had 480 unique entries, no missing originals.",
+  "directory_errors": {
+    "inode": 1001392,
+    "path": "Internal storage/Android/data/org.videolan.vlc/files/medialib",
+    "mtp_response": "InvalidObjectHandle 0x2009",
+    "classification": "same previously observed inaccessible phone directory; not Download or regression directory"
+  },
+  "normal_shutdowns": {
+    "aft-refresh-01": {
+      "time": 1794911533.804848,
+      "stage": "complete",
+      "driver_exit": 0
+    },
+    "aft-refresh-02": {
+      "time": 1794911729.6096406,
+      "stage": "complete",
+      "driver_exit": 0
+    },
+    "aft-refresh-03": {
+      "time": 1794911849.2739813,
+      "stage": "complete",
+      "driver_exit": 0
+    }
+  },
+  "limits": [
+    "Only Samsung Z Fold6 validated",
+    "No measured end-to-end Finder refresh SLA; NFS/Finder caches still apply",
+    "No claim of concurrent host/phone editing conflict resolution or full file-content cache coherence",
+    "No sustained large-video performance comparison this round",
+    "Storage hotplug within one session not implemented; storage inode mapping fixed for the session"
+  ],
+  "references": [
+    "https://libfuse.github.io/doxygen/structfuse__lowlevel__ops.html",
+    "https://raw.githubusercontent.com/torvalds/linux/v6.12/fs/fuse/inode.c"
+  ],
+  "mounted": false,
+  "production_git_changes": false
+}

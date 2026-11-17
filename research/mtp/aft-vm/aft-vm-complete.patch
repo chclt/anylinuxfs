@@ -1,0 +1,541 @@
+--- a/fuse/FuseEntry.h
++++ b/fuse/FuseEntry.h
+@@ -32,7 +32,7 @@
+ 
+ 	struct FuseEntry : fuse_entry_param
+ 	{
+-		static constexpr const double	Timeout = 60.0;
++		static constexpr const double	Timeout = 1.0;
+ 		static constexpr unsigned 		FileMode 		= S_IFREG | 0644;
+ 		static constexpr unsigned 		DirectoryMode	= S_IFDIR | 0755;
+ 
+--- a/fuse/fuse.cpp
++++ b/fuse/fuse.cpp
+@@ -38,6 +38,7 @@
+ #include <vector>
+ #include <list>
+ #include <cstdio>
++#include <chrono>
+ 
+ #include <fuse_lowlevel.h>
+ 
+@@ -72,8 +73,46 @@
+ 		typedef std::map<FuseId, ObjectEditSessionPtr> OpenedFiles;
+ 		OpenedFiles		_openedFiles;
+ 
+-		typedef std::map<FuseId, CharArray> DirectoryCache;
+-		DirectoryCache	_directoryCache;
++		using Clock = std::chrono::steady_clock;
++		// Bound revalidation traffic to directories/objects actually being accessed.
++		std::map<FuseId, Clock::time_point> _directoryChecked;
++		std::map<mtp::ObjectId, Clock::time_point> _attributeChecked;
++		std::map<FuseId, timespec> _directoryChanged;
++
++		void DirectoryChanged(FuseId inode)
++		{
++			auto &stamp = _directoryChanged[inode];
++			timespec now;
++			clock_gettime(CLOCK_REALTIME, &now);
++			if (now.tv_sec < stamp.tv_sec || (now.tv_sec == stamp.tv_sec && now.tv_nsec <= stamp.tv_nsec))
++			{
++				now = stamp;
++				if (++now.tv_nsec == 1000000000) { ++now.tv_sec; now.tv_nsec = 0; }
++			}
++			stamp = now;
++		}
++
++		void DirectoryAttr(FuseId inode, struct stat &attr)
++		{
++			// Attribute requests for a parent listing must not recursively scan children.
++			if (_files.count(inode)) GetChildren(inode);
++			auto i = _directoryChanged.find(inode);
++			if (i != _directoryChanged.end()) attr.st_mtim = attr.st_ctim = i->second;
++		}
++
++		void CacheAttributes(const ObjectAttrs &attrs)
++		{
++			for (const auto &item : attrs)
++			{
++				// During an Android edit transaction, local acknowledged writes own size.
++				if (_openedFiles.count(ToFuse(item.first))) continue;
++				auto old = _objectAttrs.find(item.first);
++				if (old != _objectAttrs.end() && (old->second.st_size != item.second.st_size || old->second.st_mtime != item.second.st_mtime))
++					_objectCache.remove_if([&](const ObjectCacheEntry &entry) { return entry.Id == item.first; });
++				_objectAttrs[item.first] = item.second;
++				_attributeChecked[item.first] = Clock::now();
++			}
++		}
+ 
+ 		static const size_t					MtpStorageShift = FUSE_ROOT_ID + 1;
+ 		static const size_t					MtpObjectShift = 999998 + MtpStorageShift;
+@@ -131,14 +170,14 @@
+ 			return FuseId(MtpStorageShift + std::distance(_storageIdList.begin(), i));
+ 		}
+ 
+-		void GetObjectInfo(ChildrenObjects &cache, mtp::ObjectId id)
++		void GetObjectInfo(ChildrenObjects &cache, mtp::ObjectId id, ObjectAttrs &attrs)
+ 		{
+ 			auto oi = _session->GetObjectInfo(id);
+ 
+ 			FuseId inode = ToFuse(id);
+ 			cache.emplace(oi.Filename, inode);
+ 
+-			struct stat &attr = _objectAttrs[id];
++			struct stat &attr = attrs[id];
+ 			attr.st_uid = getuid();
+ 			attr.st_gid = getgid();
+ 			attr.st_ino = inode.Inode;
+@@ -160,6 +199,7 @@
+ 				attr.st_mtime = attr.st_ctime = attr.st_atime = _connectTime;
+ 				attr.st_mode = FuseEntry::DirectoryMode;
+ 				attr.st_nlink = 1;
++				DirectoryAttr(inode, attr);
+ 				return attr;
+ 			}
+ 
+@@ -172,23 +212,23 @@
+ 				attr.st_mtime = attr.st_ctime = attr.st_atime = _connectTime;
+ 				attr.st_mode = FuseEntry::DirectoryMode;
+ 				attr.st_nlink = 1;
++				DirectoryAttr(inode, attr);
+ 				return attr;
+ 			}
+ 
+ 			mtp::ObjectId id = FromFuse(inode);
+ 			auto i = _objectAttrs.find(id);
+-			if (i != _objectAttrs.end())
+-				return i->second;
+-
+-			//populate cache for parent
+-			auto parent = GetParentObject(inode);
+-			GetChildren(parent); //populate cache
+-
+-			i = _objectAttrs.find(id);
+-			if (i != _objectAttrs.end())
+-				return i->second;
+-			else
+-				throw std::runtime_error("no such object");
++			if (i == _objectAttrs.end() || (!_openedFiles.count(inode) && Clock::now() - _attributeChecked[id] >= std::chrono::seconds(3)))
++			{
++				ChildrenObjects names;
++				ObjectAttrs attrs;
++				GetObjectInfo(names, id, attrs);
++				CacheAttributes(attrs);
++				i = _objectAttrs.find(id);
++			}
++			struct stat attr = i->second;
++			if (S_ISDIR(attr.st_mode)) DirectoryAttr(inode, attr);
++			return attr;
+ 		}
+ 
+ 		template<typename PropertyValueType>
+@@ -204,7 +244,7 @@
+ 				if (property == p && it != objectList.end())
+ 				{
+ 					objectList.erase(it);
+-					try { callback(objectId, value); } catch(const std::exception &ex) { mtp::error("callback for property list 0x", mtp::hex(property, 4), " failed: ", ex.what()); }
++					callback(objectId, value);
+ 				}
+ 				else
+ 					mtp::debug("extra property 0x", hex(p, 4), " returned for object ", objectId.Id, ", while querying property list 0x", mtp::hex(property, 4));
+@@ -216,51 +256,57 @@
+ 				for(auto objectId : objectList)
+ 				{
+ 					mtp::debug("querying property 0x", mtp::hex(property, 4), " for object ", objectId);
+-					try
++					mtp::ByteArray data = _session->GetObjectProperty(objectId, property);
++					mtp::InputStream stream(data);
++					PropertyValueType value = PropertyValueType();
++					stream >> value;
++					callback(objectId, value);
++				}
++			}
++		}
++
++		ChildrenObjects & GetChildren(FuseId inode)
++		{
++			auto old = _files.find(inode);
++			if (old != _files.end() && Clock::now() - _directoryChecked[inode] < std::chrono::seconds(3))
++				return old->second;
++
++			ChildrenObjects fresh;
++			ObjectAttrs attrs;
++			if (inode == FuseId::Root)
++			{
++				// Storage inode numbers belong to this session; do not reorder them.
++				for (size_t n = 0; n < _storageIdList.size(); ++n)
++					fresh.emplace(_storageToName.at(_storageIdList[n]), FuseId(MtpStorageShift + n));
++			}
++			else FetchChildren(inode, fresh, attrs);
++
++			if (old != _files.end() && old->second != fresh)
++			{
++				DirectoryChanged(inode);
++				std::set<FuseId> retained;
++				for (const auto &item : fresh) retained.insert(item.second);
++				for (const auto &item : old->second)
++					if (!retained.count(item.second) && !_openedFiles.count(item.second))
+ 					{
+-						mtp::ByteArray data = _session->GetObjectProperty(objectId, property);
+-						mtp::InputStream stream(data);
+-						PropertyValueType value = PropertyValueType();
+-						stream >> value;
+-						callback(objectId, value);
++						auto id = FromFuse(item.second);
++						_objectAttrs.erase(id);
++						_attributeChecked.erase(id);
++						_objectCache.remove_if([&](const ObjectCacheEntry &entry) { return entry.Id == id; });
+ 					}
+-					catch(const std::exception &ex) { mtp::error("fallback query/callback for property 0x", mtp::hex(property, 4), " failed: ", ex.what()); }
+-				}
+-			}
+-		}
+-
+-		ChildrenObjects & GetChildren(FuseId inode)
+-		{
+-			if (inode == FuseId::Root)
+-			{
+-				PopulateStorages();
+-				ChildrenObjects & cache = _files[inode];
+-				cache.clear();
+-				for(size_t i = 0; i < _storageIdList.size(); ++i)
+-				{
+-					mtp::StorageId storageId = _storageIdList[i];
+-					auto name = _storageToName.find(storageId);
+-					if (name != _storageToName.end())
+-						cache.emplace(name->second, FuseId(MtpStorageShift + i));
+-					else
+-						mtp::error("no storage name for ", storageId);
+-				}
+-				return cache;
+-			}
+-
+-			{
+-				auto i = _files.find(inode);
+-				if (i != _files.end())
+-					return i->second;
+-			}
+-
+-			ChildrenObjects & cache = _files[inode];
++			}
++			CacheAttributes(attrs);
++			_files[inode] = std::move(fresh);
++			_directoryChecked[inode] = Clock::now();
++			return _files.at(inode);
++		}
++
++		void FetchChildren(FuseId inode, ChildrenObjects &cache, ObjectAttrs &attrs)
++		{
++			// A failed enumeration must not publish an empty directory cache.
++			// Commit only after the query succeeds, so later callers retry.
+ 
+ 			using namespace mtp;
+-			if (inode == FuseId::Root)
+-			{
+-				return cache;
+-			}
+ 
+ 			msg::ObjectHandles oh;
+ 
+@@ -287,9 +333,9 @@
+ 
+ 					//format
+ 					GetObjectPropertyList<mtp::ObjectFormat>(parent, objects, mtp::ObjectProperty::ObjectFormat,
+-						[this](ObjectId objectId, mtp::ObjectFormat format)
++						[&attrs](ObjectId objectId, mtp::ObjectFormat format)
+ 						{
+-							struct stat & attr = _objectAttrs[objectId];
++							struct stat & attr = attrs[objectId];
+ 							attr.st_ino = ToFuse(objectId).Inode;
+ 							attr.st_mode = FuseEntry::GetMode(format);
+ 							attr.st_nlink = 1;
+@@ -297,15 +343,15 @@
+ 
+ 					//size
+ 					GetObjectPropertyList<mtp::u64>(parent, objects, mtp::ObjectProperty::ObjectSize,
+-						[this](ObjectId objectId, mtp::u64 size)
+-						{ SetSize(_objectAttrs[objectId], size); });
++						[&attrs](ObjectId objectId, mtp::u64 size)
++						{ SetSize(attrs[objectId], size); });
+ 
+ 					//mtime
+ 					try
+ 					{
+ 						GetObjectPropertyList<std::string>(parent, objects, mtp::ObjectProperty::DateModified,
+-						[this](ObjectId objectId, const std::string & mtime)
+-						{ _objectAttrs[objectId].st_mtime = mtp::ConvertDateTime(mtime); });
++						[&attrs](ObjectId objectId, const std::string & mtime)
++						{ attrs[objectId].st_mtime = mtp::ConvertDateTime(mtime); });
+ 					}
+ 					catch(const std::exception &ex)
+ 					{ }
+@@ -314,25 +360,21 @@
+ 					try
+ 					{
+ 						GetObjectPropertyList<std::string>(parent, objects, mtp::ObjectProperty::DateAdded,
+-						[this](ObjectId objectId, const std::string & ctime)
+-						{ _objectAttrs[objectId].st_ctime = mtp::ConvertDateTime(ctime); });
++						[&attrs](ObjectId objectId, const std::string & ctime)
++						{ attrs[objectId].st_ctime = mtp::ConvertDateTime(ctime); });
+ 					}
+ 					catch(const std::exception &ex)
+ 					{ }
+ 
+-					return cache;
++					return;
+ 				}
+ 			}
+ 
+ 			for(auto id : oh.ObjectHandles)
+ 			{
+-				try
+-				{
+-					GetObjectInfo(cache, id);
+-				} catch(const std::exception &ex)
+-				{ }
+-			}
+-			return cache;
++				GetObjectInfo(cache, id, attrs);
++			}
++			return;
+ 		}
+ 
+ 		FuseId CreateObject(FuseId parentInode, const std::string &filename, mtp::ObjectFormat format)
+@@ -365,8 +407,8 @@
+ 			{ //update cache:
+ 				auto i = _files.find(parentInode);
+ 				if (i != _files.end())
+-					GetObjectInfo(i->second, noi.ObjectId); //insert object info into cache
+-				_directoryCache.erase(parentInode);
++					GetObjectInfo(i->second, noi.ObjectId, _objectAttrs); //insert object info into cache
++				DirectoryChanged(parentInode);
+ 			}
+ 			return ToFuse(noi.ObjectId);
+ 		}
+@@ -426,7 +468,9 @@
+ 			_openedFiles.clear();
+ 			_files.clear();
+ 			_objectAttrs.clear();
+-			_directoryCache.clear();
++			_directoryChecked.clear();
++			_attributeChecked.clear();
++			_directoryChanged.clear();
+ 			_session.reset();
+ 			_device.reset();
+ 			_device = mtp::Device::FindFirst(_deviceFilter, _claimInterface, _resetDevice);
+@@ -485,6 +529,16 @@
+ 			mtp::scoped_mutex_lock l(_mutex);
+ 			FuseEntry entry(req);
+ 
++			// NFS may resolve an existing file handle after the kernel evicts its inode.
++			// FUSE export lookup uses "." for that inode and ".." for its parent.
++			if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
++			{
++				auto id = strcmp(name, ".") == 0 ? parent : GetParentObject(parent);
++				if (FillEntry(entry, id)) entry.Reply();
++				else entry.ReplyError(ENOENT);
++				return;
++			}
++
+ 			const ChildrenObjects & children = GetChildren(parent);
+ 			auto it = children.find(name);
+ 			if (it != children.end())
+@@ -501,30 +555,37 @@
+ 		void ReadDir(fuse_req_t req, FuseId ino, size_t size, off_t off, struct fuse_file_info *fi)
+ 		{
+ 			mtp::scoped_mutex_lock l(_mutex);
+-			if (!(GetObjectAttr(ino).st_mode & S_IFDIR))
++			if (!S_ISDIR(GetObjectAttr(ino).st_mode))
+ 			{
+ 				FUSE_CALL(fuse_reply_err(req, ENOTDIR));
+ 				return;
+ 			}
+-
+-			FuseDirectory dir(req);
+-			auto it = _directoryCache.find(ino);
+-			if (it == _directoryCache.end())
+-			{
+-				const ChildrenObjects & cache = GetChildren(ino);
+-
+-				it = _directoryCache.insert(std::make_pair(ino, CharArray())).first;
+-				CharArray &data = it->second;
+-
+-				dir.Add(data, ".", GetObjectAttr(FuseId::Root));
+-				dir.Add(data, "..", GetObjectAttr(GetParentObject(ino)));
+-				for(auto entry : cache)
+-				{
+-					dir.Add(data, entry.first, GetObjectAttr(entry.second));
+-				}
+-			}
+-
+-			dir.Reply(req, it->second, off, size);
++			const auto &children = GetChildren(ino);
++			// Stable cookies survive refresh and NFS reopening a directory between pages.
++			// Byte offsets into a name-sorted buffer do not: inserting a name shifts them.
++			std::map<off_t, std::pair<std::string, struct stat>> entries;
++			struct stat dot = {}; dot.st_ino = ino.Inode; dot.st_mode = S_IFDIR;
++			entries.emplace(1, std::make_pair(".", dot));
++			dot.st_ino = GetParentObject(ino).Inode;
++			entries.emplace(2, std::make_pair("..", dot));
++			for (const auto &child : children)
++			{
++				struct stat attr = {};
++				attr.st_ino = child.second.Inode;
++				attr.st_mode = IsStorage(child.second) ? S_IFDIR : _objectAttrs.at(FromFuse(child.second)).st_mode;
++				entries.emplace(child.second.Inode + 2, std::make_pair(child.first, attr));
++			}
++			CharArray data;
++			for (auto i = entries.upper_bound(off); i != entries.end(); ++i)
++			{
++				const auto &name = i->second.first;
++				const auto &attr = i->second.second;
++				size_t length = fuse_add_direntry(req, nullptr, 0, name.c_str(), &attr, i->first);
++				if (data.size() + length > size) break;
++				size_t begin = data.size(); data.resize(begin + length);
++				fuse_add_direntry(req, data.data() + begin, length, name.c_str(), &attr, i->first);
++			}
++			FUSE_CALL(fuse_reply_buf(req, data.data(), data.size()));
+ 		}
+ 
+ 		void GetAttr(fuse_req_t req, FuseId ino, struct fuse_file_info *fi)
+@@ -660,7 +721,12 @@
+ 		{
+ 			auto i = _openedFiles.find(ino);
+ 			if (i != _openedFiles.end())
++			{
++				auto transaction = i->second;
+ 				_openedFiles.erase(i);
++				// Report close errors through the operation, outside the destructor.
++				transaction->Finish();
++			}
+ 		}
+ 
+ 		void Release(fuse_req_t req, FuseId ino, struct fuse_file_info *fi)
+@@ -722,7 +788,7 @@
+ 			}
+ 
+ 			UnlinkImpl(inode);
+-			_directoryCache.erase(parent);
++			DirectoryChanged(parent);
+ 			children.erase(i);
+ 
+ 			FUSE_CALL(fuse_reply_err(req, 0));
+@@ -765,7 +831,7 @@
+ 
+ 			children.erase(i);
+ 			children.emplace(newName, inode);
+-			_directoryCache.erase(parent);
++			DirectoryChanged(parent);
+ 
+ 			FUSE_CALL(fuse_reply_err(req, 0));
+ 		}
+@@ -809,13 +875,10 @@
+ 
+ 	std::unique_ptr<FuseWrapper>	g_wrapper;
+ 
++// A lost session invalidates object handles. Report the failure; do not reconnect
++// and replay a possibly mutating request against a new session.
+ #define WRAP_EX(...) do { \
+ 		try { return __VA_ARGS__ ; } \
+-		catch (const mtp::usb::DeviceNotFoundException &) \
+-		{ \
+-			g_wrapper->Connect(); \
+-			__VA_ARGS__ ; \
+-		} \
+ 		catch (const std::exception &ex) \
+ 		{ mtp::error(#__VA_ARGS__ " failed: ", ex.what()); fuse_reply_err(req, EIO); } \
+ 	} while(false)
+@@ -831,6 +894,7 @@
+ 		//mtp is completely synchronous. you cannot have two transaction in parallel, so you have to wait any operation to finish before starting another one
+ 
+ 		conn->want &= ~FUSE_CAP_ASYNC_READ;
++		conn->want |= conn->capable & FUSE_CAP_EXPORT_SUPPORT;
+ 		try { g_wrapper->Init(userdata, conn); } catch (const std::exception &ex) { mtp::error("init failed:", ex.what()); }
+ 	}
+ 
+@@ -838,7 +902,10 @@
+ 	{ mtp::debug("   Lookup ", parent, " ", name); WRAP_EX(g_wrapper->Lookup(req, FuseId(parent), name)); }
+ 
+ 	void ReadDir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info *fi)
+-	{ mtp::debug("   Readdir ", ino, " ", size, " ", off); WRAP_EX(g_wrapper->ReadDir(req, FuseId(ino), size, off, fi)); }
++	{
++		try { g_wrapper->ReadDir(req, FuseId(ino), size, off, fi); }
++		catch (const std::exception &ex) { mtp::error("ReadDir inode=", ino, " off=", off, " failed: ", ex.what()); fuse_reply_err(req, EIO); }
++	}
+ 
+ 	void GetAttr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info *fi)
+ 	{ mtp::debug("   GetAttr ", ino); WRAP_EX(g_wrapper->GetAttr(req, FuseId(ino), fi)); }
+--- a/mtp/ptp/ObjectFormat.cpp
++++ b/mtp/ptp/ObjectFormat.cpp
+@@ -179,7 +179,27 @@
+ 		char *end = strptime(timespec.c_str(), "%Y%m%dT%H%M%S", &time);
+ 		if (!end)
+ 			return 0;
+-		return mktime(&time);
++		// Unqualified device dates use the configured device/host timezone.
++		// Explicit UTC/offset dates must not be interpreted as that local time.
++		if (*end == '.')
++		{
++			++end;
++			if (*end < '0' || *end > '9') return 0;
++			while (*end >= '0' && *end <= '9') ++end;
++		}
++		if (!*end) return mktime(&time);
++		if (*end == 'Z' && !end[1]) return timegm(&time);
++		if ((*end == '+' || *end == '-') && strlen(end) == 5)
++		{
++			for (int n = 1; n <= 4; ++n)
++				if (end[n] < '0' || end[n] > '9') return 0;
++			int hours = (end[1] - '0') * 10 + end[2] - '0';
++			int minutes = (end[3] - '0') * 10 + end[4] - '0';
++			if (hours > 23 || minutes > 59) return 0;
++			int offset = (hours * 60 + minutes) * 60;
++			return timegm(&time) - (*end == '+' ? offset : -offset);
++		}
++		return 0;
+ 	}
+ 
+ 	std::string ConvertDateTime(time_t time)
+--- a/mtp/ptp/Session.cpp
++++ b/mtp/ptp/Session.cpp
+@@ -553,11 +553,23 @@
+ 	void Session::RebootDevice()
+ 	{ RunTransaction(_defaultTimeout, OperationCode::RebootDevice); }
+ 
+-	Session::ObjectEditSession::ObjectEditSession(const SessionPtr & session, ObjectId objectId): _session(session), _objectId(objectId)
++	Session::ObjectEditSession::ObjectEditSession(const SessionPtr & session, ObjectId objectId): _session(session), _objectId(objectId), _finished(false)
+ 	{ session->BeginEditObject(objectId); }
+ 
+ 	Session::ObjectEditSession::~ObjectEditSession()
+-	{ _session->EndEditObject(_objectId); }
++	{
++		// Cleanup must not terminate the process when the device has disappeared.
++		try { Finish(); }
++		catch(const std::exception &ex) { mtp::error("closing edit session failed: ", ex.what()); }
++	}
++
++	void Session::ObjectEditSession::Finish()
++	{
++		if (_finished) return;
++		// A failed close has an uncertain outcome; do not replay it from cleanup.
++		_finished = true;
++		_session->EndEditObject(_objectId);
++	}
+ 
+ 	void Session::ObjectEditSession::Truncate(u64 size)
+ 	{ _session->TruncateObject(_objectId, size); }
+--- a/mtp/ptp/Session.h
++++ b/mtp/ptp/Session.h
+@@ -69,10 +69,12 @@
+ 		{
+ 			SessionPtr	_session;
+ 			ObjectId	_objectId;
++			bool		_finished;
+ 
+ 		public:
+ 			ObjectEditSession(const SessionPtr & session, ObjectId objectId);
+ 			~ObjectEditSession();
++			void Finish();
+ 
+ 			void Truncate(u64 size);
+ 			void Send(u64 offset, const ByteArray &data);

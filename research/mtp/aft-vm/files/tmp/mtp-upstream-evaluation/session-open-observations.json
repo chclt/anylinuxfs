@@ -1,0 +1,35 @@
+{
+  "time": 1794803157.853031,
+  "runs": [
+    "jmtpfs-ro-disk-02",
+    "go-mtpfs-ro-01"
+  ],
+  "go_mtpfs_result": "OpenSession LIBUSB_ERROR_TIMEOUT before mounting",
+  "usb_trace": "/Users/jike/Library/Logs/anylinuxfs_usb-vvCiE6Di.log",
+  "observations": {
+    "descriptor_control_transfers": "succeeded",
+    "interface_0_claim": "succeeded",
+    "bulk_out_16_bytes": [
+      {
+        "sequence": 25,
+        "duration_ms": 5005,
+        "actual_bytes": 0,
+        "status": -104,
+        "unlinked": true
+      },
+      {
+        "sequence": 36,
+        "duration_ms": 5004,
+        "actual_bytes": 0,
+        "status": -104,
+        "unlinked": true
+      }
+    ],
+    "remaining_experiment_processes": false,
+    "ptpcamerad_present": false,
+    "phone_visible_bus": "2-1"
+  },
+  "conclusion": "Failure precedes file reads; driver throughput and disk-temp retry remain unverified. Trace does not isolate phone versus USB forwarding/host cause.",
+  "next": "Physical reconnect with user, then repeat readonly disk-temp test",
+  "phone_file_writes": false
+}

@@ -1,0 +1,39 @@
+[
+  {
+    "op": "unlink",
+    "time": 1794804283.825501,
+    "name": "empty.bin",
+    "seconds": 0.05280295806005597
+  },
+  {
+    "op": "unlink",
+    "time": 1794804283.871114,
+    "name": "中文-small.bin",
+    "seconds": 0.04533912497572601
+  },
+  {
+    "op": "unlink",
+    "time": 1794804283.897278,
+    "name": "renamed.bin",
+    "seconds": 0.02591812494210899
+  },
+  {
+    "op": "unlink",
+    "time": 1794804284.068107,
+    "name": "large-CHEN.mp4",
+    "seconds": 0.17047687503509223
+  },
+  {
+    "op": "rmdir_subdir",
+    "time": 1794804284.143632
+  },
+  {
+    "op": "rmdir_test_directory",
+    "time": 1794804284.279915
+  },
+  {
+    "op": "verify_absent",
+    "time": 1794804284.281066,
+    "absent": true
+  }
+]

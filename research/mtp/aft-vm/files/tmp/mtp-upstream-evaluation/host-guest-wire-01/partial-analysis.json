@@ -1,0 +1,20 @@
+{
+  "test": "aft-wire-128-01",
+  "copy": {
+    "start": 1794807816.8992178,
+    "bytes_accepted": 134217728,
+    "name": "sample-128MiB.bin",
+    "elapsed_seconds": 30.773869541008025,
+    "source_sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+    "write_seconds": 30.774481666041538,
+    "fsync_seconds": 0.9937432920560241,
+    "fsync_passed": true,
+    "total_seconds": 31.768918625079095,
+    "success": true
+  },
+  "paired_records": 48,
+  "metadata_paired": 16,
+  "max_host_metadata_rtt_seconds": 0.29085206985473633,
+  "limit": "snaplen512 does not retain many RPC headers coalesced into large TCP packets; partial header matching is insufficient to assign 4-second syscall waits to client vs forwarding. Host and guest timestamps have an offset; only within-endpoint durations compared.",
+  "next": "full packet capture on both endpoints; no driver changes"
+}

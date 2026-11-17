@@ -1,0 +1,12 @@
+{
+  "start": 1794809249.179879,
+  "bytes_accepted": 478481295,
+  "name": "large-CHEN.mp4",
+  "elapsed_seconds": 128.56750274985097,
+  "source_sha256": "54891e473609cfa199cdee4f6b989a73ad185a73bc664a123600af6a9a2a6cef",
+  "write_seconds": 128.56810145801865,
+  "fsync_seconds": 1.4208024367690086e-05,
+  "fsync_passed": true,
+  "total_seconds": 128.56850420800038,
+  "success": true
+}

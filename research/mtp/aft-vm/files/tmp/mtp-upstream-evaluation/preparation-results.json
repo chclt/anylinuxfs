@@ -1,0 +1,36 @@
+{
+  "frozen_commit": "d7b2c49",
+  "candidate_source_audit": [
+    {
+      "candidate": "jmtpfs",
+      "tag": "v0.5",
+      "source_changes": []
+    },
+    {
+      "candidate": "go-mtpfs",
+      "tag": "v1.0.1",
+      "source_changes": []
+    },
+    {
+      "candidate": "simple-mtpfs",
+      "tag": "v0.4.0",
+      "source_changes": []
+    },
+    {
+      "candidate": "android-file-transfer-linux",
+      "tag": "v4.6",
+      "source_changes": []
+    }
+  ],
+  "build": "all four succeeded",
+  "adaptations": [
+    "Install Alpine official build dependencies including autoconf-archive; no driver behavior patch"
+  ],
+  "rootfs": "/Users/jike/Developer/chclt/anylinuxfs/tmp/mtp-upstream-evaluation/image/rootfs",
+  "network": "gvproxy ordinary port forwarding to NFS 2049 and mountd 32767; no MTP relay",
+  "nfs": "project entrypoint.sh, generic export options with fsid=0 and ignore-permissions mapping; default worker count",
+  "system_max_async_writes": 128,
+  "phone_tests": "not started; awaiting phone connection",
+  "helper_hashes": "a113f6b9100ca9d9344c751904c9825a8febd450acc276101e610902957afd59  bin/aft-mtp-mount\nb38125b1933213ed3eb60ce3569366cb60c37000cbf2d512853946e91e720a44  bin/go-mtpfs\ne4686878f64db7e1b75b85d85bf1cbc5e01905355ab655dc9882cd3e890c8d99  bin/jmtpfs\nada48e98b182f3d23c145791f0a8bd29d7ca841d80e973a65eab9fdb378f0a10  bin/simple-mtpfs\n",
+  "dependency_versions": "2.9.9\n3.18.3\n1.1.22\n1.0.30\n"
+}

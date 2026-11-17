@@ -1,0 +1,26 @@
+[
+  {
+    "file": "complete.bin",
+    "size": 8388608,
+    "sha256": "0f918233625392a82dae5aaba17f953199e058a637095dff444c0ea4effd3d54",
+    "matches": true,
+    "seconds": 1.1299422921147197
+  },
+  {
+    "file": "disconnect-write.bin",
+    "size": 119537664,
+    "every_byte_matches_source_pattern": false,
+    "acknowledged_before_disconnect": 118489088,
+    "first_mismatch_offset": 118505460,
+    "acknowledged_prefix_matches": true
+  },
+  {
+    "step": "new write after reconnect",
+    "bytes": 8388608,
+    "matches": true
+  },
+  {
+    "step": "cleanup",
+    "root_absent": true
+  }
+]

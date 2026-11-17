@@ -1,0 +1,61 @@
+{
+  "recorded_at": 1794564654.547203,
+  "rootfs": "/Users/jike/.anylinuxfs/alpine/rootfs",
+  "components": [
+    {
+      "path": "/Users/jike/Developer/chclt/anylinuxfs/bin/anylinuxfs",
+      "resolved": "/Users/jike/Developer/chclt/anylinuxfs/bin/anylinuxfs",
+      "size": 39575504,
+      "sha256": "19ea77de92718e69f4f7c85dd79d6200f4b3c91d712e11ec5deb30d410e19bcf"
+    },
+    {
+      "path": "/Users/jike/Developer/chclt/anylinuxfs/libexec/vmproxy",
+      "resolved": "/Users/jike/Developer/chclt/anylinuxfs/libexec/vmproxy",
+      "size": 42450304,
+      "sha256": "47ae99c72033c1f6442ef8ff865c1db51e0fd59e16e82325dc0462dd71658ba8"
+    },
+    {
+      "path": "/Users/jike/Developer/chclt/anylinuxfs/libexec/usbproxy",
+      "resolved": "/Users/jike/Developer/chclt/anylinuxfs/libexec/usbproxy",
+      "size": 4875880,
+      "sha256": "e2166a44079e82afe6c181d10dbb09b0154d7f64a049486e82e09cbd0451c280"
+    },
+    {
+      "path": "/Users/jike/Developer/chclt/anylinuxfs/libexec/gvproxy",
+      "resolved": "/Users/jike/Developer/chclt/anylinuxfs/libexec/gvproxy",
+      "size": 25359826,
+      "sha256": "c6f7b4bc7f21bf810b5cf54e04d979b014c5d96472a03a9e97fe62a00940067c"
+    },
+    {
+      "path": "/Users/jike/.anylinuxfs/alpine/rootfs/vmproxy",
+      "resolved": "/Users/jike/.anylinuxfs/alpine/rootfs/vmproxy",
+      "size": 42450304,
+      "sha256": "47ae99c72033c1f6442ef8ff865c1db51e0fd59e16e82325dc0462dd71658ba8"
+    },
+    {
+      "path": "/Users/jike/.anylinuxfs/alpine/rootfs/usr/local/libexec/anylinuxfs/mtpfs",
+      "resolved": "/Users/jike/.anylinuxfs/alpine/rootfs/usr/local/libexec/anylinuxfs/mtpfs",
+      "size": 7004752,
+      "sha256": "76596876e96cb5071575e14f35dc00829505e797398aa5ac0358c123fce775c3"
+    },
+    {
+      "path": "/Users/jike/.anylinuxfs/alpine/rootfs/usr/lib/libmtp.so.9",
+      "resolved": "/Users/jike/.anylinuxfs/alpine/rootfs/usr/lib/libmtp.so.9.4.0",
+      "size": 451960,
+      "sha256": "787844c264cdba0e9d8922b784e6f8d9d390533d438235a8bbfd55474e878d89"
+    },
+    {
+      "path": "/Users/jike/.anylinuxfs/alpine/rootfs/etc/apk/world",
+      "resolved": "/Users/jike/.anylinuxfs/alpine/rootfs/etc/apk/world",
+      "size": 367,
+      "sha256": "46f8d6fc5288c29ba44a9136fa94fdd816b59f4096fd7f51eef08974399d53b5"
+    },
+    {
+      "path": "/Users/jike/.anylinuxfs/alpine/rootfs/lib/apk/db/installed",
+      "resolved": "/Users/jike/.anylinuxfs/alpine/rootfs/lib/apk/db/installed",
+      "size": 464126,
+      "sha256": "b33e73d3e314a4035ead483939844f3231bc79aad78231cee43007fcf4e49e80"
+    }
+  ],
+  "note": "Selected component snapshot, not a complete live rootfs backup; experiments must use a separate rootfs."
+}

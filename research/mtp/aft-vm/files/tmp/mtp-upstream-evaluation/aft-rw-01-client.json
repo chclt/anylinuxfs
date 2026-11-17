@@ -1,0 +1,107 @@
+[
+  {
+    "time": 1794803809.911149,
+    "op": "mkdir",
+    "seconds": 0.04400620819069445
+  },
+  {
+    "time": 1794803809.955518,
+    "op": "create",
+    "name": "empty.bin",
+    "seconds": 0.044102291110903025
+  },
+  {
+    "time": 1794803809.9557068,
+    "op": "write",
+    "name": "empty.bin",
+    "bytes": 0,
+    "seconds": 1.166015863418579e-06
+  },
+  {
+    "time": 1794803809.955811,
+    "op": "fsync",
+    "name": "empty.bin",
+    "seconds": 2.4170149117708206e-06
+  },
+  {
+    "time": 1794803809.9560819,
+    "op": "close",
+    "name": "empty.bin",
+    "seconds": 0.00018004188314080238
+  },
+  {
+    "time": 1794803809.9564009,
+    "op": "same_mount_read",
+    "name": "empty.bin",
+    "bytes": 0,
+    "matches": true
+  },
+  {
+    "time": 1794803809.9846451,
+    "op": "create",
+    "name": "small.bin",
+    "seconds": 0.02809816598892212
+  },
+  {
+    "time": 1794803809.9848042,
+    "op": "write",
+    "name": "small.bin",
+    "bytes": 4096,
+    "seconds": 1.6832957044243813e-05
+  },
+  {
+    "time": 1794803809.993245,
+    "op": "fsync",
+    "name": "small.bin",
+    "seconds": 0.008342833025380969
+  },
+  {
+    "time": 1794803809.9937239,
+    "op": "close",
+    "name": "small.bin",
+    "seconds": 0.00016725016757845879
+  },
+  {
+    "time": 1794803809.994091,
+    "op": "same_mount_read",
+    "name": "small.bin",
+    "bytes": 4096,
+    "matches": true
+  },
+  {
+    "time": 1794803810.023082,
+    "op": "create",
+    "name": "中文-small.bin",
+    "seconds": 0.02839083387516439
+  },
+  {
+    "time": 1794803810.023935,
+    "op": "write",
+    "name": "中文-small.bin",
+    "bytes": 1048576,
+    "seconds": 0.0005294170696288347
+  },
+  {
+    "time": 1794803810.256115,
+    "op": "fsync",
+    "name": "中文-small.bin",
+    "seconds": 0.23201695806346834
+  },
+  {
+    "time": 1794803810.256752,
+    "op": "close",
+    "name": "中文-small.bin",
+    "seconds": 0.0002685829531401396
+  },
+  {
+    "time": 1794803810.257938,
+    "op": "same_mount_read",
+    "name": "中文-small.bin",
+    "bytes": 1048576,
+    "matches": true
+  },
+  {
+    "time": 1794803810.258173,
+    "op": "complete"
+  }
+]

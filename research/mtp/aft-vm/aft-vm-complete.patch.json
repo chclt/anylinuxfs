@@ -1,0 +1,27 @@
+[
+  {
+    "path": "fuse/FuseEntry.h",
+    "sha256": "83c30309119d2f328d788556995250eb0a37e8ec351e3eca5acccf34ad7c003c",
+    "deleted": false
+  },
+  {
+    "path": "fuse/fuse.cpp",
+    "sha256": "7dc3b2fd500d0ba55c2dcb0a3113095d760e0e20167ea7ed8442795c4241e3ce",
+    "deleted": false
+  },
+  {
+    "path": "mtp/ptp/ObjectFormat.cpp",
+    "sha256": "35947639945efa1c5163cfb51943f8e9ab893694e0bb7d19004c556f33887a55",
+    "deleted": false
+  },
+  {
+    "path": "mtp/ptp/Session.cpp",
+    "sha256": "954f57f83db94941b401061d6e0af073a2b234cfd1a4c887c3540a9b89654b6c",
+    "deleted": false
+  },
+  {
+    "path": "mtp/ptp/Session.h",
+    "sha256": "9484c480ae3de42877e34421a4c9e9a9a6d78240d7842314d8245cc6bc089248",
+    "deleted": false
+  }
+]

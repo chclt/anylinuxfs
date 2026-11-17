@@ -1,0 +1,80 @@
+{
+  "conditions": "unmodified AFT v4.6; isolated VM; generic kernel NFS with 4 threads and gvproxy; rw,sync,tcp,vers=3,locallocks,soft,intr,timeo=100,retrans=3,dumbtimer,wsize=32768; no global sysctl changes or production changes",
+  "results": [
+    {
+      "run": "aft-sync-128-01",
+      "bytes": 134217728,
+      "copy_seconds": 34.016669916920364,
+      "success": true,
+      "metadata_samples": 67,
+      "metadata_median_seconds": 0.006471333093941212,
+      "metadata_p95_seconds": 0.01872970792464912,
+      "metadata_max_seconds": 0.05935991695150733,
+      "metadata_errors": 0,
+      "nfs_not_responding_samples": 0,
+      "fresh_session_hash": {
+        "returncode": 0,
+        "stdout": "{\"size\": 134217728, \"sha256\": \"5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01\", \"matches\": true}\n",
+        "stderr": "",
+        "seconds": 23.150856593999997
+      }
+    },
+    {
+      "run": "aft-sync-full-01",
+      "bytes": 478481295,
+      "copy_seconds": 128.56850420800038,
+      "success": true,
+      "metadata_samples": 247,
+      "metadata_median_seconds": 0.007025500060990453,
+      "metadata_p95_seconds": 0.024850790854543447,
+      "metadata_max_seconds": 2.5753379168454558,
+      "metadata_errors": 0,
+      "nfs_not_responding_samples": 0,
+      "fresh_session_hash": {
+        "returncode": 0,
+        "stdout": "{\"size\": 478481295, \"sha256\": \"54891e473609cfa199cdee4f6b989a73ad185a73bc664a123600af6a9a2a6cef\", \"matches\": true}\n",
+        "stderr": "",
+        "seconds": 76.415607995
+      }
+    }
+  ],
+  "sessions": {
+    "aft-sync-128-01": {
+      "time": 1794809114.7254062,
+      "stage": "complete",
+      "driver_exit": 0
+    },
+    "aft-sync-full-01": {
+      "time": 1794809466.3973587,
+      "stage": "complete",
+      "driver_exit": 0
+    },
+    "aft-sync-check-01": {
+      "time": 1794809616.9626336,
+      "stage": "complete",
+      "driver_exit": 0
+    }
+  },
+  "cleanup": {
+    "returncode": 0,
+    "stdout": "[{\"directory\": \"ALFS-Upstream-Sync-128-20261116\", \"deleted\": [\"._sample-128MiB.bin\", \"sample-128MiB.bin\"], \"absent\": true}, {\"directory\": \"ALFS-Upstream-Sync-Full-20261116\", \"deleted\": [\"._large-CHEN.mp4\", \"large-CHEN.mp4\"], \"absent\": true}]\n",
+    "stderr": "",
+    "seconds": 0.31835220899999683
+  },
+  "comparison": {
+    "prior_full_copy_seconds": 112.1193803329952,
+    "prior_directory_median_seconds": 2.6378433329518884,
+    "full_copy_elapsed_increase_fraction": 0.1467107990264589
+  },
+  "limits": [
+    "Only one run per size, sequential application writer plus directory monitor; not a completed Finder or multi-writer regression.",
+    "Full-copy directory monitor had one 2.575 s stall. At the corresponding interval, guest RPC WRITE and unrelated READDIRPLUS both waited about 2.86 s; exact driver or device cause not isolated.",
+    "Both sync captures contained one unrelated directory READDIRPLUS EIO, with upstream InvalidObjectHandle log; directory compatibility remains unresolved.",
+    "Normal unmount and new-session full hashes verified, not abrupt power-loss durability."
+  ],
+  "next": "Finder copy/browse/overwrite regression using standard sync options, then separate investigation of directory enumeration compatibility. Preserve frozen production implementation.",
+  "docs": [
+    "/usr/share/man/man8/mount_nfs.8: sync waits for server response; nosync queues I/O",
+    "/usr/share/man/man8/mount.8"
+  ]
+}

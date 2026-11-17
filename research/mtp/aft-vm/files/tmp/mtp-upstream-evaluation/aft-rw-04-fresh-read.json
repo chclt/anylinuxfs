@@ -1,0 +1,9 @@
+{
+  "response": {
+    "returncode": 0,
+    "stdout": "{\"empty.bin\": {\"size\": 0, \"sha256\": \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\", \"seconds\": 0.051319582999999724}, \"\\u4e2d\\u6587-small.bin\": {\"size\": 131072, \"sha256\": \"3bcfb99d9c754ca251033df8cd80bf9f6752ff6a67bd53f016b912fe8ae732a3\", \"seconds\": 0.019503832999999915}, \"renamed.bin\": {\"size\": 8192, \"sha256\": \"dc404a613fedaeb54034514bc6505f56b933caa5250299ba7d094377a51caa46\", \"seconds\": 0.009448416999999765}, \"large-CHEN.mp4\": {\"size\": 478481295, \"sha256\": \"54891e473609cfa199cdee4f6b989a73ad185a73bc664a123600af6a9a2a6cef\", \"seconds\": 75.090058869}}\n",
+    "stderr": "",
+    "seconds": 75.211829077
+  },
+  "matches": true
+}

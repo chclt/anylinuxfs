@@ -1,0 +1,124 @@
+{
+  "start": 1794806052.765152,
+  "bytes_accepted": 134217728,
+  "name": "sample-128MiB.bin",
+  "elapsed_seconds": 27.942871707957238,
+  "source_sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+  "write_seconds": 27.943122792057693,
+  "fsync_seconds": 0.9021456248592585,
+  "fsync_passed": true,
+  "total_seconds": 28.845683332998306,
+  "success": true,
+  "metadata_samples": [
+    {
+      "time": 1794806052.765107,
+      "seconds": 0.003118415828794241
+    },
+    {
+      "time": 1794806053.2709079,
+      "seconds": 2.7271682920400053
+    },
+    {
+      "time": 1794806056.50015,
+      "seconds": 0.873020000057295
+    },
+    {
+      "time": 1794806057.874132,
+      "seconds": 2.637933832826093
+    },
+    {
+      "time": 1794806061.01582,
+      "seconds": 1.6874069580808282
+    },
+    {
+      "time": 1794806063.2082958,
+      "seconds": 0.7385844998061657
+    },
+    {
+      "time": 1794806064.449879,
+      "seconds": 3.5267628747969866
+    },
+    {
+      "time": 1794806068.47788,
+      "seconds": 0.841855000006035
+    },
+    {
+      "time": 1794806069.820663,
+      "seconds": 2.767561750020832
+    },
+    {
+      "time": 1794806073.0932832,
+      "seconds": 1.9356577908620238
+    },
+    {
+      "time": 1794806075.530089,
+      "seconds": 0.9331754590384662
+    },
+    {
+      "time": 1794806076.966304,
+      "seconds": 3.5545692921150476
+    },
+    {
+      "time": 1794806081.0237188,
+      "seconds": 0.5691210420336574
+    }
+  ],
+  "nfs_samples": [
+    {
+      "time": 1794806054.6775029,
+      "not_responding": false
+    },
+    {
+      "time": 1794806056.599684,
+      "not_responding": false
+    },
+    {
+      "time": 1794806059.444809,
+      "not_responding": false
+    },
+    {
+      "time": 1794806061.8545039,
+      "not_responding": false
+    },
+    {
+      "time": 1794806063.609547,
+      "not_responding": false
+    },
+    {
+      "time": 1794806065.482545,
+      "not_responding": false
+    },
+    {
+      "time": 1794806067.447215,
+      "not_responding": false
+    },
+    {
+      "time": 1794806069.301714,
+      "not_responding": false
+    },
+    {
+      "time": 1794806071.1952379,
+      "not_responding": false
+    },
+    {
+      "time": 1794806073.2040188,
+      "not_responding": false
+    },
+    {
+      "time": 1794806075.219993,
+      "not_responding": false
+    },
+    {
+      "time": 1794806077.208054,
+      "not_responding": false
+    },
+    {
+      "time": 1794806079.08111,
+      "not_responding": false
+    },
+    {
+      "time": 1794806080.950467,
+      "not_responding": false
+    }
+  ]
+}

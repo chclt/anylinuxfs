@@ -1,0 +1,31 @@
+--- a/mtp/ptp/ObjectFormat.cpp
++++ b/mtp/ptp/ObjectFormat.cpp
+@@ -179,7 +179,27 @@
+ 		char *end = strptime(timespec.c_str(), "%Y%m%dT%H%M%S", &time);
+ 		if (!end)
+ 			return 0;
+-		return mktime(&time);
++		// Unqualified device dates use the configured device/host timezone.
++		// Explicit UTC/offset dates must not be interpreted as that local time.
++		if (*end == '.')
++		{
++			++end;
++			if (*end < '0' || *end > '9') return 0;
++			while (*end >= '0' && *end <= '9') ++end;
++		}
++		if (!*end) return mktime(&time);
++		if (*end == 'Z' && !end[1]) return timegm(&time);
++		if ((*end == '+' || *end == '-') && strlen(end) == 5)
++		{
++			for (int n = 1; n <= 4; ++n)
++				if (end[n] < '0' || end[n] > '9') return 0;
++			int hours = (end[1] - '0') * 10 + end[2] - '0';
++			int minutes = (end[3] - '0') * 10 + end[4] - '0';
++			if (hours > 23 || minutes > 59) return 0;
++			int offset = (hours * 60 + minutes) * 60;
++			return timegm(&time) - (*end == '+' ? offset : -offset);
++		}
++		return 0;
+ 	}
+ 
+ 	std::string ConvertDateTime(time_t time)

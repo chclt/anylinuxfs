@@ -1,0 +1,287 @@
+{
+  "run": "aft-wirefull-128-01",
+  "copy": {
+    "start": 1794808255.1079721,
+    "bytes_accepted": 134217728,
+    "name": "sample-128MiB.bin",
+    "elapsed_seconds": 27.583865416934714,
+    "source_sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+    "write_seconds": 27.584113582968712,
+    "fsync_seconds": 0.9248853342141956,
+    "fsync_passed": true,
+    "total_seconds": 28.509248624788597,
+    "success": true
+  },
+  "directory_query_max_seconds": 2.770620749797672,
+  "directory_errors": 0,
+  "nfs_not_responding_samples": 0,
+  "host_capture": {
+    "method": "TCP stream reassembly from SYN; complete RPC record parsing; timings use last request and reply byte",
+    "packets": 36418,
+    "truncated_data_packets": 0,
+    "flows": [
+      {
+        "ports": [
+          62521,
+          12049
+        ],
+        "stream_bytes": 135425144,
+        "records": 7178,
+        "gap": null,
+        "incomplete_tail": false
+      },
+      {
+        "ports": [
+          12049,
+          62521
+        ],
+        "stream_bytes": 1238720,
+        "records": 7177,
+        "gap": null,
+        "incomplete_tail": false
+      }
+    ],
+    "calls": 7178,
+    "replies": 7177,
+    "paired": 7177,
+    "unmatched_calls": 1,
+    "status_counts": {
+      "None": 1,
+      "0": 6756,
+      "2": 420
+    },
+    "op_counts": {
+      "0": 1,
+      "getattr": 42,
+      "19": 1,
+      "20": 1,
+      "fsstat": 16,
+      "lookup": 420,
+      "access": 2207,
+      "readdirplus": 357,
+      "read": 2,
+      "9": 1,
+      "create": 3,
+      "write": 4098,
+      "commit": 25,
+      "setattr": 3
+    }
+  },
+  "guest_capture": {
+    "method": "TCP stream reassembly from SYN; complete RPC record parsing; timings use last request and reply byte",
+    "packets": 38335,
+    "truncated_data_packets": 0,
+    "flows": [
+      {
+        "ports": [
+          18122,
+          2049
+        ],
+        "stream_bytes": 135422684,
+        "records": 7163,
+        "gap": null,
+        "incomplete_tail": false
+      },
+      {
+        "ports": [
+          2049,
+          18122
+        ],
+        "stream_bytes": 1234652,
+        "records": 7162,
+        "gap": null,
+        "incomplete_tail": false
+      }
+    ],
+    "calls": 7163,
+    "replies": 7162,
+    "paired": 7162,
+    "unmatched_calls": 1,
+    "status_counts": {
+      "None": 1,
+      "0": 6741,
+      "2": 420
+    },
+    "op_counts": {
+      "0": 1,
+      "getattr": 42,
+      "19": 1,
+      "20": 1,
+      "fsstat": 16,
+      "lookup": 420,
+      "access": 2198,
+      "readdirplus": 351,
+      "read": 2,
+      "9": 1,
+      "create": 3,
+      "write": 4098,
+      "commit": 25,
+      "setattr": 3
+    }
+  },
+  "matched_both_endpoints": 7162,
+  "copy_phase_metadata_requests": 107,
+  "metadata_latency_seconds": {
+    "host_rtt": {
+      "median": 0.7483668327331543,
+      "p95": 0.9811689853668213,
+      "max": 1.2020289897918701,
+      "min": 8.893013000488281e-05
+    },
+    "guest_rtt": {
+      "median": 0.0496981143951416,
+      "p95": 0.09430599212646484,
+      "max": 0.15608906745910645,
+      "min": 5.9604644775390625e-06
+    },
+    "outside_guest_rtt": {
+      "median": 0.698380708694458,
+      "p95": 0.9015049934387207,
+      "max": 1.1268110275268555,
+      "min": 7.510185241699219e-05
+    },
+    "estimated_forward_seconds": {
+      "median": 0.6981730461120605,
+      "p95": 0.9011170864105225,
+      "max": 1.1263673305511475,
+      "min": 5.0067901611328125e-06
+    },
+    "estimated_return_seconds": {
+      "median": 0.0001888275146484375,
+      "p95": 0.0004436969757080078,
+      "max": 0.00214385986328125,
+      "min": -2.384185791015625e-06
+    }
+  },
+  "clock_offset": {
+    "guest_minus_host_midpoint_seconds": 0.033348798751831055,
+    "raw_lower": 0.03336381912231445,
+    "raw_upper": 0.033333778381347656,
+    "bound_inversion_seconds": 3.0040740966796875e-05,
+    "caveat": "About 30 microseconds of inconsistent bounds from timestamp precision/jitter or drift. One-way estimates should be read to millisecond precision; RTT differences are independent of wall-clock offset."
+  },
+  "slow_directory_example": {
+    "syscall": {
+      "time": 1794808276.6543639,
+      "seconds": 2.770620749797672
+    },
+    "rpc_sequence": [
+      {
+        "xid": 2896657480,
+        "op": "getattr",
+        "object": "other",
+        "send_after_start": 0.19757604598999023,
+        "reply_after_start": 1.1787450313568115,
+        "host_rtt": 0.9811689853668213,
+        "guest_rtt": 0.0997469425201416,
+        "host_unanswered_writes": 128,
+        "host_unanswered_write_bytes": 4194304,
+        "guest_unanswered_writes": 12
+      },
+      {
+        "xid": 2896657489,
+        "op": "access",
+        "object": "other",
+        "send_after_start": 0.2632732391357422,
+        "reply_after_start": 1.2046082019805908,
+        "host_rtt": 0.9413349628448486,
+        "guest_rtt": 0.055505990982055664,
+        "host_unanswered_writes": 128,
+        "host_unanswered_write_bytes": 4194304,
+        "guest_unanswered_writes": 9
+      },
+      {
+        "xid": 2896657586,
+        "op": "getattr",
+        "object": "test_directory",
+        "send_after_start": 0.9937272071838379,
+        "reply_after_start": 1.8531920909881592,
+        "host_rtt": 0.8594648838043213,
+        "guest_rtt": 0.09430599212646484,
+        "host_unanswered_writes": 128,
+        "host_unanswered_write_bytes": 4194304,
+        "guest_unanswered_writes": 12
+      },
+      {
+        "xid": 2896657615,
+        "op": "getattr",
+        "object": "other",
+        "send_after_start": 1.1788151264190674,
+        "reply_after_start": 1.9966890811920166,
+        "host_rtt": 0.8178739547729492,
+        "guest_rtt": 0.0552830696105957,
+        "host_unanswered_writes": 128,
+        "host_unanswered_write_bytes": 4194304,
+        "guest_unanswered_writes": 11
+      },
+      {
+        "xid": 2896657619,
+        "op": "access",
+        "object": "other",
+        "send_after_start": 1.2047030925750732,
+        "reply_after_start": 2.042065143585205,
+        "host_rtt": 0.8373620510101318,
+        "guest_rtt": 0.07213711738586426,
+        "host_unanswered_writes": 128,
+        "host_unanswered_write_bytes": 4194304,
+        "guest_unanswered_writes": 11
+      },
+      {
+        "xid": 2896657720,
+        "op": "readdirplus",
+        "object": "test_directory",
+        "send_after_start": 1.8532311916351318,
+        "reply_after_start": 2.7704620361328125,
+        "host_rtt": 0.9172308444976807,
+        "guest_rtt": 0.11404609680175781,
+        "host_unanswered_writes": 127,
+        "host_unanswered_write_bytes": 4161536,
+        "guest_unanswered_writes": 12
+      },
+      {
+        "xid": 2896657752,
+        "op": "lookup",
+        "object": "other",
+        "send_after_start": 2.042206048965454,
+        "reply_after_start": 2.9314041137695312,
+        "host_rtt": 0.8891980648040771,
+        "guest_rtt": 0.0496981143951416,
+        "host_unanswered_writes": 128,
+        "host_unanswered_write_bytes": 4194304,
+        "guest_unanswered_writes": 10
+      }
+    ]
+  },
+  "conclusion": "Most measured metadata RPC wait is after host loopback capture and before guest receipt, amid 127-128 unanswered 32 KiB writes (~4 MiB). Guest service remains ~0.05 s median. This supports shared-connection backlog/backpressure; it does not identify a specific gvproxy implementation bug or prove the same result on vmnet.",
+  "fresh_hashes": {
+    "returncode": 0,
+    "stdout": "{\"ALFS-Upstream-Wire-128-20261116\": {\"size\": 134217728, \"sha256\": \"5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01\", \"seconds\": 21.692913509999997, \"matches\": true}, \"ALFS-Upstream-WireFull-128-20261116\": {\"size\": 134217728, \"sha256\": \"5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01\", \"seconds\": 21.472074426999995, \"matches\": true}}\n",
+    "stderr": "",
+    "seconds": 43.22493027
+  },
+  "cleanup": {
+    "returncode": 0,
+    "stdout": "[{\"directory\": \"ALFS-Upstream-Wire-128-20261116\", \"removed\": [\"._sample-128MiB.bin\", \"sample-128MiB.bin\"], \"absent\": true}, {\"directory\": \"ALFS-Upstream-WireFull-128-20261116\", \"removed\": [\"._sample-128MiB.bin\", \"sample-128MiB.bin\"], \"absent\": true}]\n",
+    "stderr": "",
+    "seconds": 0.3253490840000097
+  },
+  "next": "Test standard per-mount sync option as a reversible control for write backlog; avoid global sysctl and custom NFS relay changes.",
+  "sessions": {
+    "aft-wire-128-01": {
+      "time": 1794808087.3804555,
+      "stage": "complete",
+      "driver_exit": 0
+    },
+    "aft-wirefull-128-01": {
+      "time": 1794808521.603923,
+      "stage": "complete",
+      "driver_exit": 0
+    },
+    "aft-wire-check-01": {
+      "time": 1794808789.7503068,
+      "stage": "complete",
+      "driver_exit": 0
+    }
+  },
+  "host_capture_stopped": true
+}

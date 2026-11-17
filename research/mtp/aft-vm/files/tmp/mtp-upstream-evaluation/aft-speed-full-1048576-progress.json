@@ -1,0 +1,12 @@
+{
+  "start": 1794889033.1241689,
+  "bytes_accepted": 478481295,
+  "name": "CHEN.mp4",
+  "elapsed_seconds": 48.11355245811865,
+  "source_sha256": "54891e473609cfa199cdee4f6b989a73ad185a73bc664a123600af6a9a2a6cef",
+  "write_seconds": 48.11379283317365,
+  "fsync_seconds": 4.459172487258911e-06,
+  "fsync_passed": true,
+  "total_seconds": 48.11413454101421,
+  "success": true
+}

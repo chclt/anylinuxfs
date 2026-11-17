@@ -1,0 +1,70 @@
+{
+  "driver": "AFT v4.6 + directory-cache patch + disconnect-exit patch",
+  "normal_8MiB_write_read": true,
+  "disconnect": {
+    "error": "[Errno 5] Input/output error",
+    "errno": 5,
+    "seconds": 52.493546083103865,
+    "total_acknowledged": 521142272,
+    "time": 1794907952.1972978
+  },
+  "last_ack": {
+    "time": 1794907952.098562,
+    "cycle": 3,
+    "offset": 118489088,
+    "total_acknowledged": 521142272,
+    "seconds": 0.09876012802124023
+  },
+  "normal_unmount_seconds": 0.01,
+  "guest_exit": {
+    "time": 1794907974.4857278,
+    "stage": "complete",
+    "driver_exit": 0
+  },
+  "recovery_first_attempt": "phone unlocked, MTP storage list empty; no test files written; NFS and VM stopped normally; user asked to toggle charge/file-transfer",
+  "recovery_pending": false,
+  "production_integrated": false,
+  "recovery": [
+    {
+      "file": "complete.bin",
+      "size": 8388608,
+      "sha256": "0f918233625392a82dae5aaba17f953199e058a637095dff444c0ea4effd3d54",
+      "matches": true,
+      "seconds": 1.1299422921147197
+    },
+    {
+      "file": "disconnect-write.bin",
+      "size": 119537664,
+      "every_byte_matches_source_pattern": false,
+      "acknowledged_before_disconnect": 118489088,
+      "first_mismatch_offset": 118505460,
+      "acknowledged_prefix_matches": true
+    },
+    {
+      "step": "new write after reconnect",
+      "bytes": 8388608,
+      "matches": true
+    },
+    {
+      "step": "cleanup",
+      "root_absent": true
+    }
+  ],
+  "recovery_exit": {
+    "time": 1794908202.7645605,
+    "stage": "complete",
+    "driver_exit": 0
+  },
+  "remaining": [
+    "Phone may return an empty storage list after reconnect; charge/file-transfer toggle restored it. Startup integration should not report such an empty volume as usable.",
+    "Interrupted file can include an unacknowledged partially written tail; application must treat the failed copy as incomplete, remove/re-copy it. No resume or atomic overwrite guarantee.",
+    "Finder cancel button not tested in this round; cancellation used SIGTERM on cp.",
+    "Xiaomi and HarmonyOS focused regressions still pending."
+  ],
+  "patches": [
+    "directory-fix/directory-cache.patch",
+    "directory-fix/disconnect-exit.patch"
+  ],
+  "binary_sha256": "c4d1f56de1b9e77e473166452cd2989f9ff72a990d8f87d19359c704841264e0",
+  "mounted": false
+}

@@ -1,0 +1,31 @@
+[
+  {
+    "step": "32 MiB complete readback",
+    "seconds": 9.447014207951725,
+    "sha256": "7c998c4ca4113b3bb119093baf564f55fd019661b6122d28b795d326692cb589"
+  },
+  {
+    "step": "cross-directory move",
+    "rename_errno": 18,
+    "copy_delete_fallback": true,
+    "sha256": "626593ca13e6d642af76705a9ec4e8dc6b170d03ba8480b51e89144705d528ec"
+  },
+  {
+    "step": "overwrite grow and shrink",
+    "passed": true
+  },
+  {
+    "step": "cancel command-line copy",
+    "sent_SIGTERM": true,
+    "exit": -15,
+    "seconds": 0.9920011661015451,
+    "partial_size": 8388608,
+    "source_size": 478481295,
+    "prefix_matches": true,
+    "sha256": "06837dfa87905832886deb70f5f7c28e29b569586a3dc924824f967efad4f591"
+  },
+  {
+    "step": "ready for disconnect",
+    "passed": true
+  }
+]

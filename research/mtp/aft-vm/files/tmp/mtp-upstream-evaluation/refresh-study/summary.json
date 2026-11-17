@@ -1,0 +1,88 @@
+{
+  "study": "Samsung Z Fold6 phone-side directory changes, one uninterrupted raw MTP session",
+  "date": "2026-11-17",
+  "production_code_changed": false,
+  "host_mount_active": false,
+  "probe_closed_normally": true,
+  "transitions": [
+    {
+      "scan": 0,
+      "epoch": 1794910425,
+      "directory_id": 9,
+      "directory_modified": "20261117T180307",
+      "count": 45,
+      "matches": [
+        "1558 www.txt size=0 modified=20261117T180307"
+      ],
+      "seconds": 0.0668336
+    },
+    {
+      "scan": 32,
+      "epoch": 1794910492,
+      "directory_id": 9,
+      "directory_modified": "20261117T181452",
+      "count": 46,
+      "matches": [
+        "1558 www.txt size=0 modified=20261117T180307",
+        "1567 alfs-refresh-test.txt size=0 modified=20261117T181452"
+      ],
+      "seconds": 0.0634836
+    },
+    {
+      "scan": 98,
+      "epoch": 1794910629,
+      "directory_id": 9,
+      "directory_modified": "20261117T181708",
+      "count": 46,
+      "matches": [
+        "1568 alfs-refresh-renamed.txt size=0 modified=20261117T181452",
+        "1558 www.txt size=0 modified=20261117T180307"
+      ],
+      "seconds": 0.0514283
+    },
+    {
+      "scan": 123,
+      "epoch": 1794910681,
+      "directory_id": 9,
+      "directory_modified": "20261117T181802",
+      "count": 45,
+      "matches": [
+        "1558 www.txt size=0 modified=20261117T180307"
+      ],
+      "seconds": 0.0748729
+    }
+  ],
+  "scan_seconds": {
+    "min": 0.0489526,
+    "median": 0.0782245,
+    "max": 0.16202
+  },
+  "observations": [
+    "Prior host NFS and guest FUSE listings both missed www.txt; fresh raw MTP session saw it.",
+    "Phone-created dedicated file, rename, and delete were visible within the same raw MTP session.",
+    "Rename changed object handle from 1567 to 1568; file modification date stayed unchanged.",
+    "Parent directory modification date changed for all three observed operations.",
+    "No writes by probe. User removed dedicated test file; www.txt retained."
+  ],
+  "source_findings": [
+    "AFT successful _files directory cache has no expiration.",
+    "Encoded _directoryCache and _objectAttrs are cached separately.",
+    "FUSE attribute/entry timeout is 60 seconds; root/storage attributes use connection time.",
+    "Existing PollEvent path is not an active event invalidation implementation."
+  ],
+  "proposed_experiment": [
+    "Bounded on-demand refresh of accessed directories, with atomic successful snapshot publication; no full-tree polling.",
+    "Reconcile object IDs/names/attributes and expose actual detected directory change through attributes used by NFS.",
+    "Treat phone parent mtime as optimization only, not sole correctness condition; test storage-root and same-second changes.",
+    "Preserve directory enumeration cookie semantics across refresh; validate large multi-page directories over NFS.",
+    "Measure end-to-end Finder visibility latency and copy throughput before choosing cache TTLs."
+  ],
+  "not_yet_validated": [
+    "Refresh patch through FUSE/NFS/Finder",
+    "Same-second changes",
+    "File-content edits and page-cache coherence",
+    "Other phones",
+    "Concurrent host and phone mutation"
+  ],
+  "official_reference": "https://libfuse.github.io/doxygen/structfuse__lowlevel__ops.html"
+}

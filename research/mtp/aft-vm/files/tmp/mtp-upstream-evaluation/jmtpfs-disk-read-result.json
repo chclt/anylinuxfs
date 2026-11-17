@@ -1,0 +1,27 @@
+{
+  "candidate": "jmtpfs v0.5",
+  "run": "jmtpfs-ro-disk-03",
+  "read_bytes": 478481295,
+  "sha256_matches": true,
+  "total_seconds": 51.100254958029836,
+  "first_read_seconds": 42.11078837513924,
+  "directory_errors": [
+    {
+      "seconds": 5.223572832997888,
+      "error": "[Errno 60] Operation timed out: '/Users/jike/Developer/chclt/anylinuxfs/tmp/mtp-upstream-evaluation/mount/Internal storage/ALFS-Finder-Test-20261112-140129'"
+    }
+  ],
+  "nfs_not_responding_samples": 36,
+  "normal_host_unmount": "passed",
+  "guest_cleanup": {
+    "time": 1794803352.0552785,
+    "stage": "complete",
+    "driver_exit": 0
+  },
+  "environment": "disk-backed /tmp, stock NFS, 1 vCPU, 512 MiB, USB trace enabled",
+  "limitations": [
+    "One sample, includes background directory activity; not a controlled throughput benchmark",
+    "Read-only test does not establish write durability or writable suitability"
+  ],
+  "phone_file_writes": false
+}

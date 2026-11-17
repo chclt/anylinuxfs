@@ -1,0 +1,132 @@
+{
+  "method": "TCP stream reassembly from SYN; complete RPC record parsing; timings use last request and reply byte",
+  "packets": 166827,
+  "truncated_data_packets": 0,
+  "flows": [
+    {
+      "ports": [
+        42700,
+        2049
+      ],
+      "stream_bytes": 134925160,
+      "records": 4327,
+      "gap": null,
+      "incomplete_tail": false
+    },
+    {
+      "ports": [
+        2049,
+        42700
+      ],
+      "stream_bytes": 908680,
+      "records": 4327,
+      "gap": null,
+      "incomplete_tail": false
+    },
+    {
+      "ports": [
+        44237,
+        2049
+      ],
+      "stream_bytes": 134637260,
+      "records": 2573,
+      "gap": null,
+      "incomplete_tail": false
+    },
+    {
+      "ports": [
+        2049,
+        44237
+      ],
+      "stream_bytes": 546028,
+      "records": 2573,
+      "gap": null,
+      "incomplete_tail": false
+    },
+    {
+      "ports": [
+        58168,
+        2049
+      ],
+      "stream_bytes": 134538760,
+      "records": 1981,
+      "gap": null,
+      "incomplete_tail": false
+    },
+    {
+      "ports": [
+        2049,
+        58168
+      ],
+      "stream_bytes": 459952,
+      "records": 1981,
+      "gap": null,
+      "incomplete_tail": false
+    },
+    {
+      "ports": [
+        56050,
+        2049
+      ],
+      "stream_bytes": 135157776,
+      "records": 5668,
+      "gap": null,
+      "incomplete_tail": false
+    },
+    {
+      "ports": [
+        2049,
+        56050
+      ],
+      "stream_bytes": 1109264,
+      "records": 5668,
+      "gap": null,
+      "incomplete_tail": false
+    },
+    {
+      "ports": [
+        64658,
+        2049
+      ],
+      "stream_bytes": 479061284,
+      "records": 3578,
+      "gap": null,
+      "incomplete_tail": false
+    },
+    {
+      "ports": [
+        2049,
+        64658
+      ],
+      "stream_bytes": 813100,
+      "records": 3578,
+      "gap": null,
+      "incomplete_tail": false
+    }
+  ],
+  "calls": 18127,
+  "replies": 18127,
+  "paired": 18127,
+  "unmatched_calls": 0,
+  "status_counts": {
+    "None": 5,
+    "0": 17651,
+    "2": 471
+  },
+  "op_counts": {
+    "0": 5,
+    "getattr": 119,
+    "19": 5,
+    "20": 5,
+    "fsstat": 365,
+    "lookup": 491,
+    "access": 11213,
+    "9": 5,
+    "create": 15,
+    "write": 4199,
+    "commit": 10,
+    "setattr": 15,
+    "readdirplus": 1638,
+    "read": 42
+  }
+}

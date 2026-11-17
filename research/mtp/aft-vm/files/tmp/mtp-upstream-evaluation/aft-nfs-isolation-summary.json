@@ -1,0 +1,91 @@
+{
+  "results": [
+    {
+      "run": "aft-rw-03",
+      "nfs_threads": 1,
+      "timer": "adaptive",
+      "total_write_seconds": 118.99940249999054,
+      "bytes": 478481295,
+      "fsync_passed": true,
+      "host_directory_samples": 103,
+      "host_directory_errors": 101,
+      "host_directory_max_seconds": 1.1650736250448972,
+      "host_directory_median_seconds": 0.7667552907951176,
+      "host_directory_p95_seconds": 0.7777009590063244,
+      "nfs_not_responding_samples": 32
+    },
+    {
+      "run": "aft-nfs4-01",
+      "nfs_threads": 4,
+      "timer": "adaptive",
+      "total_write_seconds": 110.75600795797072,
+      "bytes": 478481295,
+      "fsync_passed": true,
+      "host_directory_samples": 99,
+      "host_directory_errors": 97,
+      "host_directory_max_seconds": 0.7858863330911845,
+      "host_directory_median_seconds": 0.7649054168723524,
+      "host_directory_p95_seconds": 0.7775756251066923,
+      "nfs_not_responding_samples": 28,
+      "guest_directory_samples": 246,
+      "guest_directory_errors": 0,
+      "guest_directory_max_seconds": 0.10797474999999679
+    },
+    {
+      "run": "aft-timer-01",
+      "nfs_threads": 4,
+      "timer": "fixed (dumbtimer)",
+      "total_write_seconds": 112.1193803329952,
+      "bytes": 478481295,
+      "fsync_passed": true,
+      "host_directory_samples": 39,
+      "host_directory_errors": 0,
+      "host_directory_max_seconds": 5.7990719170775265,
+      "host_directory_median_seconds": 2.6378433329518884,
+      "host_directory_p95_seconds": 4.151132707949728,
+      "nfs_not_responding_samples": 0,
+      "guest_directory_samples": 254,
+      "guest_directory_errors": 0,
+      "guest_directory_max_seconds": 0.11388379200000287
+    }
+  ],
+  "common_conditions": "unmodified AFT v4.6; 1 CPU, 512 MiB; generic kernel NFS and gvproxy; same USB and 478481295-byte source; timeo=100,retrans=3; no custom relay or writeback engine",
+  "observational_changes": "Two 4-thread runs also collect VM directory latency and pcap; 1-thread baseline did not. File targets are fresh separate dedicated directories.",
+  "inference": "Changing 1 to 4 server threads did not eliminate timeouts. With 4 threads, disabling the client dynamic timeout estimator eliminated errors in this one run without a meaningful throughput change. Host directory wait still reached 5.8 s. This does not establish all latency or failure paths are solved.",
+  "rpc_analysis_limit": "Only headers in snaplen-256 capture matched, not full TCP reassembly; sampled server metadata responses are fast, but no claim of all RPCs analyzed or exact syscall-to-RPC correlation.",
+  "fresh_session_hash": {
+    "returncode": 0,
+    "stdout": "{\"ALFS-Upstream-NFS4-20261116-01\": {\"bytes\": 478481295, \"sha256\": \"54891e473609cfa199cdee4f6b989a73ad185a73bc664a123600af6a9a2a6cef\", \"seconds\": 73.20710470200001, \"matches\": true}, \"ALFS-Upstream-Timer-20261116-01\": {\"bytes\": 478481295, \"sha256\": \"54891e473609cfa199cdee4f6b989a73ad185a73bc664a123600af6a9a2a6cef\", \"seconds\": 75.96124182800001, \"matches\": true}}\n",
+    "stderr": "",
+    "seconds": 149.225216113
+  },
+  "cleanup": {
+    "returncode": 0,
+    "stdout": "[{\"directory\": \"ALFS-Upstream-NFS4-20261116-01\", \"deleted\": [\"._large-CHEN.mp4\", \"large-CHEN.mp4\"], \"absent\": true}, {\"directory\": \"ALFS-Upstream-Timer-20261116-01\", \"deleted\": [\"._large-CHEN.mp4\", \"large-CHEN.mp4\"], \"absent\": true}]\n",
+    "stderr": "",
+    "seconds": 0.41921433300001354
+  },
+  "sessions": {
+    "aft-nfs4-01": {
+      "time": 1794804793.6374571,
+      "stage": "complete",
+      "driver_exit": 0
+    },
+    "aft-timer-01": {
+      "time": 1794805044.7356987,
+      "stage": "complete",
+      "driver_exit": 0
+    },
+    "aft-isolation-check-01": {
+      "time": 1794805277.2766767,
+      "stage": "complete",
+      "driver_exit": 0
+    }
+  },
+  "next": "Investigate host-side queuing and standard per-mount transfer options; keep upstream driver unchanged. No need to infer whole driver failure or restart custom MTP implementation.",
+  "docs": [
+    "/usr/share/man/man8/mount_nfs.8",
+    "https://www.rfc-editor.org/rfc/rfc5531.html",
+    "https://www.rfc-editor.org/rfc/rfc1813.html"
+  ]
+}

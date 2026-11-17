@@ -1,0 +1,69 @@
+[
+  {
+    "case": "read-15-muteFalse",
+    "result": {
+      "elapsed": 28.03689670562744,
+      "result": 4096
+    },
+    "max_other_access_ms": 56.35,
+    "other_access_errors": 0,
+    "flags": [
+      "Status flags: 0x0",
+      "Status flags: 0x2,not responding"
+    ]
+  },
+  {
+    "case": "getattr-15-muteFalse",
+    "result": {
+      "elapsed": 28.02920699119568,
+      "result": 4096
+    },
+    "max_other_access_ms": 16.98,
+    "other_access_errors": 0,
+    "flags": [
+      "Status flags: 0x0",
+      "Status flags: 0x2,not responding"
+    ]
+  },
+  {
+    "case": "readdir-15-muteFalse",
+    "result": {
+      "elapsed": 28.02829098701477,
+      "result": [
+        "child.txt"
+      ]
+    },
+    "max_other_access_ms": 22.13,
+    "other_access_errors": 0,
+    "flags": [
+      "Status flags: 0x0",
+      "Status flags: 0x2,not responding"
+    ]
+  },
+  {
+    "case": "read-75-muteFalse",
+    "result": {
+      "elapsed": 88.08625817298889,
+      "result": 4096
+    },
+    "max_other_access_ms": 81.24,
+    "other_access_errors": 0,
+    "flags": [
+      "Status flags: 0x0",
+      "Status flags: 0x2,not responding"
+    ]
+  },
+  {
+    "case": "read-75-muteTrue",
+    "result": {
+      "elapsed": 88.08698105812073,
+      "result": 4096
+    },
+    "max_other_access_ms": 25.79,
+    "other_access_errors": 0,
+    "flags": [
+      "Status flags: 0x0",
+      "Status flags: 0x2,not responding"
+    ]
+  }
+]

@@ -1,0 +1,10 @@
+{
+  "monitoring_after_copy_first_confirmed": 1794810838.2065768,
+  "samples": 783,
+  "median_seconds": 0.005900709191337228,
+  "p95_seconds": 0.037816207855939865,
+  "max_seconds": 0.1371483749244362,
+  "errors": [],
+  "nfs_not_responding_samples": 0,
+  "ui_observation": "Finder batch copy three files, navigate parent and target during transfer, Quick Look playback of completed CHEN during WAN copy, replace overwrite.bin with different content; no observed interruption dialog. UI copy started before timestamp by a few seconds; exact duration derived separately from RPC trace."
+}

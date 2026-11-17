@@ -1,0 +1,17 @@
+{
+  "video_mtime": {
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "1794470392"
+  },
+  "video_size": {
+    "returncode": 0,
+    "stderr": "",
+    "stdout": "478481295"
+  },
+  "directory_listing": {
+    "returncode": 1,
+    "stderr": "ls: /sdcard/Android/data/org.videolan.vlc/files/medialib: Permission denied",
+    "entry_count": 0
+  }
+}

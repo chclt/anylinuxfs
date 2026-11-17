@@ -1,0 +1,12 @@
+{
+  "start": 1794808255.1079721,
+  "bytes_accepted": 134217728,
+  "name": "sample-128MiB.bin",
+  "elapsed_seconds": 27.583865416934714,
+  "source_sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+  "write_seconds": 27.584113582968712,
+  "fsync_seconds": 0.9248853342141956,
+  "fsync_passed": true,
+  "total_seconds": 28.509248624788597,
+  "success": true
+}

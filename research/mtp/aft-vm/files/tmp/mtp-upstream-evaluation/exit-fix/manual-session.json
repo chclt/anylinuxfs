@@ -1,0 +1,10 @@
+{
+  "run": "aft-manual-fixed-01",
+  "mount": "/Users/jike/Developer/chclt/anylinuxfs/tmp/mtp-upstream-evaluation/mount",
+  "storage": "/Users/jike/Developer/chclt/anylinuxfs/tmp/mtp-upstream-evaluation/mount/Internal storage",
+  "storage_entries": 30,
+  "started": 1794908728.84533,
+  "configuration": "AFT v4.6 + directory cache + disconnect exit fixes; VM + generic NFS; sync, rwsize=1048576; four nfsd threads",
+  "host_log": "/Users/jike/Developer/chclt/anylinuxfs/tmp/mtp-upstream-evaluation/exit-fix/manual-host.log",
+  "auto_exit_timer": false
+}

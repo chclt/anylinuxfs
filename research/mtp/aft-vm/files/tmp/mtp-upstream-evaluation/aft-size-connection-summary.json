@@ -1,0 +1,194 @@
+{
+  "common": "AFT v4.6 unmodified; 4 NFS threads; 1 CPU/512 MiB; same first 128 MiB of CHEN video; dumbtimer,timeo=100,retrans=3; fixed USB/gvproxy path",
+  "results": [
+    {
+      "run": "aft-w32-128-01",
+      "wsize": 32768,
+      "rdirplus": true,
+      "write_seconds": 32.31062708306126,
+      "bytes": 134217728,
+      "fsync_passed": true,
+      "host_directory": {
+        "samples": 11,
+        "errors": 0,
+        "median_seconds": 1.0595198750961572,
+        "max_seconds": 5.295199250103906
+      },
+      "nfs_not_responding_samples": 0,
+      "guest_directory": {
+        "samples": 109,
+        "errors": 0,
+        "median_seconds": 0.004749042000000259,
+        "max_seconds": 0.09954754199999627
+      },
+      "guest_directory_during_copy": {
+        "samples": 61,
+        "errors": 0,
+        "median_seconds": 0.02029633300000455,
+        "max_seconds": 0.09954754199999627
+      }
+    },
+    {
+      "run": "aft-w8-128-01",
+      "wsize": 8192,
+      "rdirplus": true,
+      "write_seconds": 77.7162563749589,
+      "bytes": 134217728,
+      "fsync_passed": true,
+      "host_directory": {
+        "samples": 47,
+        "errors": 0,
+        "median_seconds": 0.6613739579916,
+        "max_seconds": 3.1342478750739247
+      },
+      "nfs_not_responding_samples": 0,
+      "guest_directory": {
+        "samples": 298,
+        "errors": 0,
+        "median_seconds": 0.004093167000007725,
+        "max_seconds": 0.3842453329999991
+      },
+      "guest_directory_during_copy": {
+        "samples": 152,
+        "errors": 0,
+        "median_seconds": 0.0103546875000049,
+        "max_seconds": 0.048554792000004454
+      }
+    },
+    {
+      "run": "aft-nordirplus-128-01",
+      "wsize": 32768,
+      "rdirplus": false,
+      "write_seconds": 28.845683332998306,
+      "bytes": 134217728,
+      "fsync_passed": true,
+      "host_directory": {
+        "samples": 13,
+        "errors": 0,
+        "median_seconds": 1.6874069580808282,
+        "max_seconds": 3.5545692921150476
+      },
+      "nfs_not_responding_samples": 0,
+      "guest_directory": {
+        "samples": 178,
+        "errors": 0,
+        "median_seconds": 0.00024645850000126757,
+        "max_seconds": 2.5937046259999974
+      },
+      "guest_directory_during_copy": {
+        "samples": 55,
+        "errors": 0,
+        "median_seconds": 0.01836166699999353,
+        "max_seconds": 0.07665054199999588
+      }
+    },
+    {
+      "run": "aft-dual-128-01",
+      "wsize": 32768,
+      "rdirplus": true,
+      "write_seconds": 32.05047050002031,
+      "bytes": 134217728,
+      "fsync_passed": true,
+      "host_directory": {
+        "samples": 11,
+        "errors": 0,
+        "median_seconds": 2.038739958079532,
+        "max_seconds": 4.964983999961987
+      },
+      "nfs_not_responding_samples": 0,
+      "guest_directory": {
+        "samples": 108,
+        "errors": 0,
+        "median_seconds": 0.016155083000001014,
+        "max_seconds": 0.2220638749999999
+      },
+      "independent_readonly_mount": {
+        "samples": 59,
+        "errors": 0,
+        "median_seconds": 0.030421582981944084,
+        "max_seconds": 0.147611791966483
+      },
+      "guest_directory_during_copy": {
+        "samples": 60,
+        "errors": 0,
+        "median_seconds": 0.028528438000002154,
+        "max_seconds": 0.1059309169999949
+      }
+    }
+  ],
+  "dual_connection_captured_operations": {
+    "43108": {
+      "access": 562,
+      "readdirplus": 219,
+      "getattr": 15,
+      "read": 1,
+      "lookup": 2,
+      "18": 3,
+      "8": 2,
+      "2": 2,
+      "write": 270,
+      "commit": 6
+    },
+    "44422": {
+      "getattr": 24,
+      "19": 1,
+      "20": 1,
+      "18": 62,
+      "lookup": 414,
+      "access": 2500,
+      "readdirplus": 455,
+      "read": 8
+    }
+  },
+  "conclusions": [
+    "8 KiB wsize costs over twice the copy time and still leaves multi-second directory waits",
+    "nordirplus does not eliminate multi-second waits in this sample",
+    "During same write, independent read-only mount stays responsive while the writing mount stalls; supports per-mount/connection-path queuing rather than whole-device or global driver blockage"
+  ],
+  "limits": [
+    "Single run per configuration; not a throughput benchmark",
+    "Directory monitoring is not a full Finder regression",
+    "Does not isolate macOS client internals from per-TCP forwarding effects",
+    "Independent read-only mount is a diagnostic control, not a proposed product UX"
+  ],
+  "fresh_hashes": {
+    "returncode": 0,
+    "stdout": "{\"ALFS-Upstream-W32-128-20261116\": {\"bytes\": 134217728, \"sha256\": \"5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01\", \"seconds\": 20.137900343, \"matches\": true}, \"ALFS-Upstream-W8-128-20261116\": {\"bytes\": 134217728, \"sha256\": \"5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01\", \"seconds\": 20.678170342999998, \"matches\": true}, \"ALFS-Upstream-NoDirPlus-128-20261116\": {\"bytes\": 134217728, \"sha256\": \"5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01\", \"seconds\": 23.957630011000006, \"matches\": true}, \"ALFS-Upstream-Dual-128-20261116\": {\"bytes\": 134217728, \"sha256\": \"5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01\", \"seconds\": 23.005870970000004, \"matches\": true}}\n",
+    "stderr": "",
+    "seconds": 87.87819537499999
+  },
+  "cleanup": {
+    "returncode": 0,
+    "stdout": "[{\"directory\": \"ALFS-Upstream-W32-128-20261116\", \"deleted\": [\"._sample-128MiB.bin\", \"sample-128MiB.bin\"], \"absent\": true}, {\"directory\": \"ALFS-Upstream-W8-128-20261116\", \"deleted\": [\"._sample-128MiB.bin\", \"sample-128MiB.bin\"], \"absent\": true}, {\"directory\": \"ALFS-Upstream-NoDirPlus-128-20261116\", \"deleted\": [\"._sample-128MiB.bin\", \"sample-128MiB.bin\"], \"absent\": true}, {\"directory\": \"ALFS-Upstream-Dual-128-20261116\", \"deleted\": [\"._sample-128MiB.bin\", \"sample-128MiB.bin\"], \"absent\": true}]\n",
+    "stderr": "",
+    "seconds": 0.5159840000000031
+  },
+  "sessions": {
+    "aft-w32-128-01": {
+      "time": 1794805790.5576189,
+      "stage": "complete",
+      "driver_exit": 0
+    },
+    "aft-w8-128-01": {
+      "time": 1794805987.5919964,
+      "stage": "complete",
+      "driver_exit": 0
+    },
+    "aft-nordirplus-128-01": {
+      "time": 1794806141.4122908,
+      "stage": "complete",
+      "driver_exit": 0
+    },
+    "aft-dual-128-01": {
+      "time": 1794806306.582953,
+      "stage": "complete",
+      "driver_exit": 0
+    },
+    "aft-size-check-01": {
+      "time": 1794806463.6982183,
+      "stage": "complete",
+      "driver_exit": 0
+    }
+  },
+  "next": "Distinguish macOS per-mount/TCP request queue from forwarding path, preserving upstream drivers and avoiding custom filesystem/writeback/relay changes."
+}

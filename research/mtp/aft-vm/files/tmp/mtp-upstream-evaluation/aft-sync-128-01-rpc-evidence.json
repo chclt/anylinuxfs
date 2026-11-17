@@ -1,0 +1,16 @@
+{
+  "test_directory_fh": "01000181000000000000000067480f0001000000",
+  "test_file_fh": "01000181000000000000000069480f0001000000",
+  "test_file_write_requests": 4096,
+  "test_file_bytes_in_write_requests": 134217728,
+  "test_file_max_unanswered_writes_at_guest": 1,
+  "other_directory_errors": [
+    {
+      "op": "readdirplus",
+      "status": 5,
+      "fh": "010001810000000000000000db430f0001000000",
+      "seconds": 0.009301900863647461,
+      "is_test_directory": false
+    }
+  ]
+}

@@ -1,0 +1,136 @@
+{
+  "start": 1794807816.8992178,
+  "bytes_accepted": 134217728,
+  "name": "sample-128MiB.bin",
+  "elapsed_seconds": 30.773869541008025,
+  "source_sha256": "5481793db171faffb96c2e8c3c77496eb3db15ff51471c24ea81b2ec1c882e01",
+  "write_seconds": 30.774481666041538,
+  "fsync_seconds": 0.9937432920560241,
+  "fsync_passed": true,
+  "total_seconds": 31.768918625079095,
+  "success": true,
+  "metadata_samples": [
+    {
+      "time": 1794807816.899172,
+      "seconds": 0.031096083112061024
+    },
+    {
+      "time": 1794807817.435325,
+      "seconds": 2.8197075000498444
+    },
+    {
+      "time": 1794807820.756681,
+      "seconds": 0.9532976660411805
+    },
+    {
+      "time": 1794807822.2111712,
+      "seconds": 0.9698731668759137
+    },
+    {
+      "time": 1794807823.681825,
+      "seconds": 4.015065208077431
+    },
+    {
+      "time": 1794807828.2001011,
+      "seconds": 0.9679408329539001
+    },
+    {
+      "time": 1794807829.6683142,
+      "seconds": 1.9506083328742534
+    },
+    {
+      "time": 1794807832.121553,
+      "seconds": 2.4171533749904484
+    },
+    {
+      "time": 1794807835.042569,
+      "seconds": 0.9906726251356304
+    },
+    {
+      "time": 1794807836.53559,
+      "seconds": 1.9325475001242012
+    },
+    {
+      "time": 1794807838.972773,
+      "seconds": 3.012679290957749
+    },
+    {
+      "time": 1794807842.488034,
+      "seconds": 1.9556557920295745
+    },
+    {
+      "time": 1794807844.9452858,
+      "seconds": 0.999611167004332
+    },
+    {
+      "time": 1794807846.447967,
+      "seconds": 2.2190099169965833
+    }
+  ],
+  "nfs_samples": [
+    {
+      "time": 1794807818.860435,
+      "not_responding": false
+    },
+    {
+      "time": 1794807820.6508312,
+      "not_responding": false
+    },
+    {
+      "time": 1794807822.650464,
+      "not_responding": false
+    },
+    {
+      "time": 1794807824.612496,
+      "not_responding": false
+    },
+    {
+      "time": 1794807826.647151,
+      "not_responding": false
+    },
+    {
+      "time": 1794807828.625692,
+      "not_responding": false
+    },
+    {
+      "time": 1794807830.602886,
+      "not_responding": false
+    },
+    {
+      "time": 1794807833.551169,
+      "not_responding": false
+    },
+    {
+      "time": 1794807835.570996,
+      "not_responding": false
+    },
+    {
+      "time": 1794807837.532081,
+      "not_responding": false
+    },
+    {
+      "time": 1794807839.553976,
+      "not_responding": false
+    },
+    {
+      "time": 1794807841.552245,
+      "not_responding": false
+    },
+    {
+      "time": 1794807843.529633,
+      "not_responding": false
+    },
+    {
+      "time": 1794807845.5395389,
+      "not_responding": false
+    },
+    {
+      "time": 1794807847.522908,
+      "not_responding": false
+    },
+    {
+      "time": 1794807848.657686,
+      "not_responding": false
+    }
+  ]
+}
