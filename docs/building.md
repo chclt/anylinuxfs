@@ -41,3 +41,6 @@ The compiled executable will be available under `./bin`:
 ```sh
 bin/anylinuxfs list
 ```
+
+Experimental MTP builds additionally need the USB/IP kernel and AFT guest helper.
+See [MTP setup and limitations](mtp.md).

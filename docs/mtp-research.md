@@ -10,7 +10,7 @@
 | `codex/archive/mtp-native-writeback` | 原生 libmtp + 自研缓存/写回 + macFUSE FSKit | 基于 main 保存隔离实验；也保存未运行成功的直接 FSKit 对照 |
 | `codex/archive/mtp-file-provider` | File Provider | 基于 main 保存模拟后端原型；未接真实 MTP |
 | `codex/archive/mtp-aft-native` | AFT + 原生 macFUSE FSKit | 基于 main 保存读回复与 AppleDouble 补丁、实机和平台对照 |
-| `codex/mtp-aft` | AFT + Linux VM + 标准 NFS | 从 main `9602097` 新建；保存接入材料，尚未接入正式构建 |
+| `codex/mtp-aft` | AFT + Linux VM + 标准 NFS | 从 main `9602097` 新建；已接入 CLI 与构建；验证范围见 `docs/mtp.md` |
 
 `codex/mtp-architecture` 原有分支和 Disk Arbitration 生命周期修复的 stash 保留不动。
 各分支的 `research/mtp/<方案>/README.md` 说明源代码入口、恢复方式与验证边界。

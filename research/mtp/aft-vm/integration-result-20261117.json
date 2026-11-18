@@ -1,0 +1,92 @@
+{
+  "date": "2026-11-17",
+  "branch": "codex/mtp-aft",
+  "baseline": "9602097",
+  "device": "Samsung Z Fold 6 (04e8:6860)",
+  "transport": "gvproxy, formal CLI mount path, no ignore-permissions",
+  "build": {
+    "host_and_both_guest_targets": "passed",
+    "aft_helper": "built and installed using scripts/prepare-mtp-guest.sh",
+    "rust_tests": 96,
+    "failed": 0
+  },
+  "nfs": {
+    "server_threads": 4,
+    "server_max_block_size": 1048576,
+    "client_rsize": 1048576,
+    "client_wsize": 1048576,
+    "sync": true,
+    "dumbtimer": true,
+    "host_global_limit_modified": false
+  },
+  "ownership": {
+    "uid": 502,
+    "gid": 20
+  },
+  "timezone_resource": "guest virtiofs read-only; TZ only supplied to AFT",
+  "operations": [
+    {
+      "name": "write empty.bin",
+      "seconds": 0.03953404212370515
+    },
+    {
+      "name": "write payload.bin",
+      "seconds": 0.6926248329691589
+    },
+    {
+      "name": "write 中文 空格.txt",
+      "seconds": 0.044380499981343746
+    },
+    {
+      "name": "rename",
+      "seconds": 0.007001916179433465
+    },
+    {
+      "name": "overwrite and truncate",
+      "seconds": 0.006612000055611134
+    }
+  ],
+  "readonly_write_errno": 30,
+  "fresh_readonly_hashes": true,
+  "video": {
+    "bytes": 478481295,
+    "write_seconds": 37.76696216594428,
+    "MiB_s": 12.082394128426271,
+    "metadata_samples": 64,
+    "metadata_max_seconds": 0.4167860420420766,
+    "mtime": 1794914992.0,
+    "start_epoch": 1794914991.521128,
+    "end_epoch": 1794915029.2885382
+  },
+  "fresh_vm_hashes": {
+    "empty.bin": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "seconds": 0.04467425006441772
+    },
+    "renamed.bin": {
+      "sha256": "025794f3b31dc8e96b7f64a344b15e271b154d4c155e37ab6f3886fc094ca56b",
+      "seconds": 0.4213012910913676
+    },
+    "中文 空格.txt": {
+      "sha256": "d5878b9306810e2ac33d7c18221fab603185df96114512e5a39b488fd70e1b0d",
+      "seconds": 0.011571208946406841
+    },
+    "video.mp4": {
+      "sha256": "54891e473609cfa199cdee4f6b989a73ad185a73bc664a123600af6a9a2a6cef",
+      "seconds": 66.90506320795976
+    }
+  },
+  "test_directory_removed": true,
+  "observed_directory_error": {
+    "path": "Android/data/org.videolan.vlc/files/medialib",
+    "inode": 1000231,
+    "result": "InvalidObjectHandle (0x2009), previously confirmed phone access restriction"
+  },
+  "limitations": [
+    "CLI copy, not Finder UI regression",
+    "No physical unplug during this integration round",
+    "Only Samsung tested with current integration",
+    "Phone-side existing-file content refresh remains to verify",
+    "Ordinary disk integration tests not rerun; existing Rust tests and both guest builds passed"
+  ]
+}

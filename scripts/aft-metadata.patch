@@ -1,0 +1,37 @@
+--- a/fuse/fuse.cpp
++++ b/fuse/fuse.cpp
+@@ -46,6 +46,10 @@
+ namespace
+ {
+ 	using namespace mtp::fuse;
++
++	// Reserve Mac metadata names for content-only MTP transfers; keep other dotfiles.
++	bool IsMacMetadataName(const char *name)
++	{ return strcmp(name, ".DS_Store") == 0 || strncmp(name, "._", 2) == 0; }
+ 
+ 	// Only direct queries of the requested object can establish its absence.
+ 	// An InvalidObjectHandle from directory enumeration is still an I/O error.
+@@ -433,6 +437,11 @@
+ 
+ 		void CreateObject(mtp::ObjectFormat format, fuse_req_t req, FuseId parentId, const char *name, mode_t mode, fuse_file_info *createInfo = NULL)
+ 		{
++			if (IsMacMetadataName(name))
++			{
++				FUSE_CALL(fuse_reply_err(req, EACCES));
++				return;
++			}
+ 			if (parentId == FuseId::Root)
+ 			{
+ 				FUSE_CALL(fuse_reply_err(req, EPERM)); //cannot create files in the same level with storages
+@@ -817,6 +826,11 @@
+ 
+ 		void Rename(fuse_req_t req, FuseId parent, const char *name, FuseId newparent, const char *newName, unsigned int flags)
+ 		{
++			if (IsMacMetadataName(newName))
++			{
++				FUSE_CALL(fuse_reply_err(req, EACCES));
++				return;
++			}
+ 			if (parent != newparent) {
+ 				//no renames across directory boundary, sorry
+ 				//return cross-device link, so user space should re-create file and copy it

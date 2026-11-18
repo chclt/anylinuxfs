@@ -1,0 +1,90 @@
+--- a/fuse/fuse.cpp
++++ b/fuse/fuse.cpp
+@@ -57,6 +57,8 @@
+ 	class FuseWrapper
+ 	{
+ 		std::mutex		_mutex;
++		uid_t _ownerUid;
++		gid_t _ownerGid;
+ 		std::string		_deviceFilter;
+ 		bool			_claimInterface;
+ 		bool			_resetDevice;
+@@ -186,8 +188,6 @@
+ 			cache.emplace(oi.Filename, inode);
+ 
+ 			struct stat &attr = attrs[id];
+-			attr.st_uid = getuid();
+-			attr.st_gid = getgid();
+ 			attr.st_ino = inode.Inode;
+ 			attr.st_mode = FuseEntry::GetMode(oi.ObjectFormat);
+ 			attr.st_atime = attr.st_mtime = mtp::ConvertDateTime(oi.ModificationDate);
+@@ -198,11 +198,18 @@
+ 
+ 		struct stat GetObjectAttr(FuseId inode)
+ 		{
++			// Apply mount ownership equally to bulk, single-object and synthetic attributes.
++			auto attr = ReadObjectAttr(inode);
++			attr.st_uid = _ownerUid;
++			attr.st_gid = _ownerGid;
++			return attr;
++		}
++
++		struct stat ReadObjectAttr(FuseId inode)
++		{
+ 			if (inode == FuseId::Root)
+ 			{
+ 				struct stat attr = { };
+-				attr.st_uid = getuid();
+-				attr.st_gid = getgid();
+ 				attr.st_ino = inode.Inode;
+ 				attr.st_mtime = attr.st_ctime = attr.st_atime = _connectTime;
+ 				attr.st_mode = FuseEntry::DirectoryMode;
+@@ -214,8 +221,6 @@
+ 			if (IsStorage(inode))
+ 			{
+ 				struct stat attr = { };
+-				attr.st_uid = getuid();
+-				attr.st_gid = getgid();
+ 				attr.st_ino = inode.Inode;
+ 				attr.st_mtime = attr.st_ctime = attr.st_atime = _connectTime;
+ 				attr.st_mode = FuseEntry::DirectoryMode;
+@@ -478,8 +483,8 @@
+ 		}
+ 
+ 	public:
+-		FuseWrapper(const std::string & deviceFilter, bool claimInterface, bool resetDevice):
+-			_deviceFilter(deviceFilter), _claimInterface(claimInterface), _resetDevice(resetDevice), _partialObjectCacheSize(DefaultPartialObjectCacheSize)
++		FuseWrapper(const std::string & deviceFilter, bool claimInterface, bool resetDevice, uid_t ownerUid, gid_t ownerGid):
++			_ownerUid(ownerUid), _ownerGid(ownerGid), _deviceFilter(deviceFilter), _claimInterface(claimInterface), _resetDevice(resetDevice), _partialObjectCacheSize(DefaultPartialObjectCacheSize)
+ 		{ Connect(); }
+ 
+ 		void Connect()
+@@ -1019,8 +1024,19 @@
+ 
+ 	args.push_back(nullptr);
+ 
++	// Ownership is a mount presentation setting, not a phone-side permission.
++	struct Owner { unsigned int uid, gid; } owner = { getuid(), getgid() };
++	const struct fuse_opt ownerOptions[] = {
++		{ "uid=%u", offsetof(Owner, uid), 0 },
++		{ "gid=%u", offsetof(Owner, gid), 0 },
++		FUSE_OPT_END
++	};
++	struct fuse_args fuse_args = FUSE_ARGS_INIT(static_cast<int>(args.size() - 1), args.data());
++	if (fuse_opt_parse(&fuse_args, &owner, ownerOptions, nullptr) == -1)
++		return 1;
++
+ 	try
+-	{ g_wrapper.reset(new FuseWrapper(deviceFilter, claimInterface, resetDevice)); }
++	{ g_wrapper.reset(new FuseWrapper(deviceFilter, claimInterface, resetDevice, owner.uid, owner.gid)); }
+ 	catch(const std::exception &ex)
+ 	{ mtp::error("connect failed: ", ex.what()); return 1; }
+ 
+@@ -1043,7 +1059,6 @@
+ 	ops.unlink		= &Unlink;
+ 	ops.statfs		= &StatFS;
+ 
+-	struct fuse_args fuse_args = FUSE_ARGS_INIT(static_cast<int>(args.size() - 1), args.data());
+ 	struct fuse_cmdline_opts opts = {};
+ 	int err = -1;
+ 
