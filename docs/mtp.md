@@ -27,7 +27,7 @@ For the default Alpine rootfs location, prepare AFT with:
 ./bin/anylinuxfs shell --command true
 mtp_build_dir="$HOME/.anylinuxfs/alpine/rootfs/opt/alfs-aft-build"
 mkdir -p "$mtp_build_dir"
-cp scripts/prepare-mtp-guest.sh scripts/aft-filesystem.patch scripts/aft-owner.patch scripts/aft-usb.patch scripts/aft-metadata.patch "$mtp_build_dir/"
+cp scripts/prepare-mtp-guest.sh scripts/aft-filesystem.patch scripts/aft-owner.patch scripts/aft-usb.patch scripts/aft-metadata.patch scripts/aft-harmony.patch "$mtp_build_dir/"
 ./bin/anylinuxfs shell --rw-rootfs --command 'sh /opt/alfs-aft-build/prepare-mtp-guest.sh'
 ```
 
@@ -54,6 +54,12 @@ sudo ./bin/anylinuxfs mount mtp:BUS_ID -o rw -w false
 Replace `BUS_ID` with the current USB identifier. Without `-o rw`, the mount is
 read-only. `-w false` prevents opening Finder automatically. The invoking user's
 UID/GID are passed to AFT, so ordinary use does not require `--ignore-permissions`.
+
+Writable mounts require the Android EditObject operations used by AFT. Devices
+without them, including the tested HarmonyOS 6.1 phone, must use `-o ro` (or omit
+`-o`). An explicit `-o rw` fails before mounting; it is not silently downgraded.
+Standard whole-file MTP uploads are possible on that phone, but this filesystem
+does not add a staging/upload mechanism to emulate random writes.
 
 macOS MTP mounts default to synchronous NFS3 requests, 1 MiB reads/writes and
 `dumbtimer`, retaining the ordinary bounded soft/intr retry settings. The guest
@@ -82,6 +88,16 @@ semantics.
 The host USB bridge forwards a zero-length bulk write as one terminating packet.
 It only maps the guest's append-zero-packet flag to libusb for nonempty writes;
 otherwise Darwin can send a second terminating packet and stall the session.
+
+`aft-harmony.patch` uses ObjectInfo metadata and enumeration-derived storage IDs
+for Huawei devices without Android editing support, whose advertised property
+queries return placeholders. Other devices retain the property-list fast path.
+Parent lookup reads current ObjectInfo instead of retaining an old directory
+parent. The Linux USB backend keeps an interrupt request queued and consumes events in
+the same completion loop as bulk requests. Cancellation drains completions without processing or rearming events before
+releasing the request buffer; the normal transfer loop processes any drained event. CloseSession uses a one-second timeout per USB transfer;
+failures are logged while normal cleanup continues. This does not establish that
+the phone acknowledged closing, and the outer helper exit deadline remains.
 
 `aft-metadata.patch` makes MTP mounts content-transfer volumes. Creating entries
 named `.DS_Store` or starting with `._`, including renaming to those names,
@@ -165,3 +181,66 @@ Existing `.DS_Store` and `._*` fixtures remained readable and deletable. Direct
 NFS calls rejected the reserved create/rename targets with `EACCES`; ordinary
 dotfiles and ordinary rename worked. All phone test fixtures were removed. The
 production patch retains this tested policy and removes only diagnostic logging.
+
+## HarmonyOS 6.1 read-only validation (2026-11-18)
+
+The Huawei device returned placeholder values for object properties and an
+ObjectInfo storage ID affected by prior enumeration parameters. The compatibility
+path restored Download enumeration (13 entries) and reading a 919,960-byte file.
+A fresh-session read matched its SHA-256. Before enforcing read-only policy, the
+isolated interrupt-reader experiment completed five consecutive renames in
+7–13 ms and cleaned all test objects. Without the reader, rename timed out even
+though the phone had performed it.
+
+Short CloseSession waits reduced unmount from about 5.5 seconds with a forced
+helper kill to about 1.5 seconds with normal helper exit. Direct remount without
+changing USB mode passed. The phone still did not acknowledge CloseSession.
+
+Standard 1 MiB whole-object upload, byte-for-byte readback and deletion passed,
+but that does not provide the random-write operations required by this FUSE
+filesystem. The chosen scope is read-only. The final build rejected `-o rw`
+before mounting, then accepted an immediate `-o ro` retry. Reads passed, writes
+returned `EROFS`, and unmount completed in 1.65 seconds without a forced kill.
+
+The Harmony results do not cover Xiaomi, HarmonyOS 7 or Harmony physical
+disconnection. See
+[`harmony61-result-20261118.json`](../research/mtp/aft-vm/harmony61-result-20261118.json).
+
+
+## Samsung regression with Harmony compatibility patch (2026-11-18)
+
+The same final helper passed Z Fold 6 read/write, USB boundary sizes, Unicode
+names, overwrite/truncate, and file/directory renames. All 11 files matched their
+SHA-256 after direct remount without a mode change and again after unplug and
+reconnect. A new 1 MiB write after reconnect also passed; test data was removed.
+Normal unmounts took 0.58 and 0.57 seconds, with helper and VM exit status 0.
+
+During a direct-I/O read loop, unplug occurred between reads; the next open
+returned EIO. Unmount took 0.36 seconds without forced termination. Device-gone
+messages during CloseSession, interrupt cancellation and USB/IP detach were
+logged. This does not establish behavior during an active write transaction.
+
+Background enumeration also logged InvalidObjectHandle for a non-test inode
+whose current path was not identified; the run is not a claim of error-free logs.
+Finder UI was not retested. See
+[`samsung-harmony-regression-20261118.json`](../research/mtp/aft-vm/samsung-harmony-regression-20261118.json).
+
+
+### Review corrections after hardware regression
+
+The parent cache was removed: Huawei parent lookup now reads current ObjectInfo,
+while storage IDs still come from concrete-storage enumeration. A newly resolved
+parent inherits the child’s storage ID before it is exposed to FUSE, so upward
+lookup does not require the parent to have been enumerated first. USB cancellation
+now drains raw completions separately from event processing, preserving request
+lifetimes when an event completes with an error during cancellation.
+
+The hardware results above refer to helper SHA-256 `9ee20aae…`, before these two
+corrections. The corrected helper builds successfully; the phone-side directory
+move case still needs Harmony hardware verification.
+
+A temporary syscall-injection check against the actual Linux USB backend
+reproduced one unreaped bulk completion in the old implementation when an event
+failed during cancellation. The corrected implementation drained the cancelled
+request and preserved its original timeout with both successful and failed event
+completions. The temporary test source was removed after verification.

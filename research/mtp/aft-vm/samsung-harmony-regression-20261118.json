@@ -1,0 +1,109 @@
+{
+  "date": "2026-11-18",
+  "device": "Samsung Z Fold 6, 04e8:6860 (user confirmed)",
+  "baseline_commit": "e11bf6c",
+  "patch": "scripts/aft-harmony.patch (uncommitted)",
+  "helper_sha256": "9ee20aae55059796670eb99a1310abd65a38aa266c30885441e6eb85ecadc7a8",
+  "transport": "formal CLI, gvproxy, rw NFS mount; no Finder UI automation",
+  "passed": [
+    "read/write",
+    "empty file",
+    "65524/65536/65537-byte USB boundaries",
+    "Unicode name",
+    "overwrite with shorter content",
+    "truncate",
+    "file rename",
+    "directory rename with child",
+    "direct remount without USB mode change",
+    "all 11 hashes after fresh VM and after physical reconnect",
+    "1 MiB new write after reconnect",
+    "cleanup"
+  ],
+  "initial_32_mib_write_seconds": 1.647,
+  "normal_unmount_seconds": [
+    0.5780606248881668,
+    0.5704537080600858
+  ],
+  "unplug": {
+    "probe": "guest dd iflag=direct, 32 MiB read loop",
+    "observed": "three reads completed; next open failed with EIO after disconnect",
+    "unmount_seconds": 0.3602206250652671,
+    "helper_exit": 0,
+    "vm_exit": 0,
+    "forced_kill": false,
+    "limitations": "unplug landed between reads; does not prove cancellation mid-bulk-write",
+    "cleanup_diagnostics": [
+      "CloseSession: device disconnected",
+      "DISCARDURB: No such device",
+      "USB/IP detach: Invalid argument"
+    ]
+  },
+  "background_directory_error": {
+    "inode": 1000234,
+    "error": "InvalidObjectHandle (0x2009)",
+    "scope": "not one of this test directory or child inodes; current path unidentified",
+    "note": "No claim of an entirely error-free log or proof of whether this predates the patch"
+  },
+  "files": {
+    "boundary-0.bin": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "boundary-1.bin": {
+      "bytes": 1,
+      "sha256": "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+    },
+    "boundary-65524.bin": {
+      "bytes": 65524,
+      "sha256": "c5e525c0dad78739a5c35947df4c5cdff00f95a6dbc863fe2d1f9dce05deb17d"
+    },
+    "boundary-65536.bin": {
+      "bytes": 65536,
+      "sha256": "504f74553676d77a4c8d6801821dd7d633d5abbaa8141ef38cff0829e38c19cb"
+    },
+    "boundary-65537.bin": {
+      "bytes": 65537,
+      "sha256": "bb2ce5bc5af70ae4858586932dec7f3c8c4867fab1773633fdb70be7b4966d05"
+    },
+    "boundary-1048576.bin": {
+      "bytes": 1048576,
+      "sha256": "0f230e7087ead575858ccd220f94677bea918ea958a5debd4d159052a7612d35"
+    },
+    "中文 已改名.txt": {
+      "bytes": 19,
+      "sha256": "ff028f29ff7a0e69ff968011ce9f5f96c2b751704d7bb82d4f0db581bae8c5fc"
+    },
+    "large.bin": {
+      "bytes": 33554432,
+      "sha256": "28364d823edf8f7e7d6d74642e47fafaf67c518ddf3b7318bf5902ff4ec7324f"
+    },
+    "overwrite.bin": {
+      "bytes": 9,
+      "sha256": "e2208f01e42b2cab0fef975b55dc70d39579dd3d0c5d0758c499baa5109ef187"
+    },
+    "truncate.bin": {
+      "bytes": 17,
+      "sha256": "3c37f662e2fc3767e69c2e3bd4bd79eaada3152ca9506e6324246638ef498627"
+    },
+    "nested-renamed/child.txt": {
+      "bytes": 12,
+      "sha256": "2a351923a366e02902a36745929d0a0022b0b2130100accdff661d6d5b860365"
+    },
+    "post-reconnect.bin": {
+      "bytes": 1048576,
+      "sha256": "b63cb29c7f308da41a0cc86f20638d44a06818a21fa61ea6a78bb3edca2d5934"
+    }
+  },
+  "logs": [
+    "anylinuxfs-anxy3syI.log",
+    "anylinuxfs-uBIRB8Ke.log",
+    "anylinuxfs-QuKf17rB.log"
+  ],
+  "final_state": "test directory removed; unmounted; helper/VM exited 0; no commit created",
+  "remaining_coverage": [
+    "Xiaomi",
+    "HarmonyOS 7",
+    "Finder UI with final patch",
+    "disconnect during active write"
+  ]
+}

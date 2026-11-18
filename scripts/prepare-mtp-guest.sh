@@ -35,6 +35,7 @@ patch -p1 < "$script_dir/aft-filesystem.patch"
 patch -p1 < "$script_dir/aft-owner.patch"
 patch -p1 < "$script_dir/aft-usb.patch"
 patch -p1 < "$script_dir/aft-metadata.patch"
+patch -p1 < "$script_dir/aft-harmony.patch"
 /usr/bin/cmake -S . -B "$work_dir/build" \
     -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
     -DBUILD_QT_UI=OFF -DBUILD_PYTHON=OFF -DBUILD_TAGLIB=OFF \
@@ -46,4 +47,4 @@ install -m 755 "$work_dir/build/fuse/aft-mtp-mount" "$destination/aft-mtp-mount.
 mv "$destination/aft-mtp-mount.new" "$destination/aft-mtp-mount"
 mkdir -p /usr/local/share/licenses/anylinuxfs-aft
 install -m 644 LICENSE /usr/local/share/licenses/anylinuxfs-aft/LICENSE
-echo "Installed AFT $revision with anylinuxfs filesystem, ownership, USB and metadata patches."
+echo "Installed AFT $revision with anylinuxfs filesystem, ownership, USB, metadata and device compatibility patches."

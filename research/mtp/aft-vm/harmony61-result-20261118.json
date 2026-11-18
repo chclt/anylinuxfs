@@ -1,0 +1,83 @@
+{
+  "date": "2026-11-18",
+  "baseline_commit": "e11bf6c",
+  "device": "Huawei 12d1:1101, HarmonyOS 6.1 (user confirmed)",
+  "decision": "Read-only support; no staged whole-file writeback added",
+  "final_helper_sha256": "9ee20aae55059796670eb99a1310abd65a38aa266c30885441e6eb85ecadc7a8",
+  "directory_protocol": {
+    "property_storage": 0,
+    "property_format": 0,
+    "object_info_directory_format": 12289,
+    "object_info_storage_after_all_storage_enumeration": 4294967295,
+    "download_children": 13
+  },
+  "directory_fix": "Huawei devices lacking Android editing use ObjectInfo and retained enumeration topology; other devices keep bulk property-list path",
+  "event_experiment": {
+    "method": "one queued interrupt URB reaped in the bulk completion loop, no extra reader thread",
+    "rename_seconds": [
+      0.0125999,
+      0.0067894,
+      0.007979,
+      0.0077991,
+      0.0076487
+    ],
+    "delete_and_nested_directory": "passed and cleaned",
+    "note": "This pre-policy experiment permitted mutations. The final Huawei mount is read-only and rejects rename/create/delete."
+  },
+  "close_experiment": {
+    "without_short_timeout_seconds": 5.5233674,
+    "without_short_timeout": "AFT forcibly killed",
+    "with_short_timeout_seconds": [
+      1.4902252,
+      1.49239
+    ],
+    "with_short_timeout": "AFT exited with status 0; CloseSession timeout still logged",
+    "direct_remount_without_mode_cycle": "passed; fresh file SHA-256 matched"
+  },
+  "whole_upload_probe": {
+    "bytes": 1048576,
+    "seconds": 0.0619919,
+    "protocol": "standard SendObject; no Android EditObject",
+    "readback": "byte-for-byte match",
+    "cleanup": "deleted",
+    "filesystem_write_support": "not implemented; user chose read-only"
+  },
+  "final_policy_validation": {
+    "rw": "rejected before FUSE/NFS mount with explicit -o ro guidance",
+    "immediate_ro_retry": "passed without mode change",
+    "download_children": 13,
+    "readback_bytes": 919960,
+    "readback_sha256": "38b4c96f7d6dad5fa78912bb3dbbdd1ec0c858e01ec252e99951e576494676ea",
+    "write_errno": 30,
+    "unmount_seconds": 1.6515935,
+    "helper_exit": 0,
+    "forced_kill": false,
+    "test_objects_removed": true
+  },
+  "limitations": [
+    "Final patch not retested on Xiaomi; Samsung follow-up recorded separately",
+    "HarmonyOS 7 not tested in this round",
+    "No Harmony physical unplug test; Samsung read-loop unplug follow-up recorded separately",
+    "This was CLI/NFS verification, not a new Finder UI regression",
+    "CloseSession acknowledgment remains absent; bounded cleanup does not prove acknowledgment"
+  ],
+  "runtime_state": "Unmounted; installed helper matches final patch; no production commit created",
+  "followup": "samsung-harmony-regression-20261118.json",
+  "post_review_corrections": {
+    "helper_sha256": "0d6db35257efc9ad6a6dce611e937ee85a28b5ea1611d9ae1b54c14c40f48b20",
+    "build": "passed after parent storage propagation fix",
+    "installed": false,
+    "parent_lookup": "Query current ObjectInfo; propagate the known child storage to a newly resolved parent before exposing it to FUSE",
+    "usb_cancellation": "drain raw completions without event handling; handle drained event on normal transfer loop",
+    "temporary_fault_injection": {
+      "implementation": "actual Linux USB backend with wrapped ioctl/poll, no phone access",
+      "old": "event EPIPE during bulk cancellation replaced original timeout and left one completion queued",
+      "fixed": [
+        "event success: cancelled bulk reaped, original timeout retained, next write and interrupt rearm succeeded",
+        "event EPIPE: cancelled bulk reaped, original timeout retained, next request reported event error with its own bulk completion drained"
+      ],
+      "test_source": "removed after verification; no permanent test added"
+    },
+    "hardware": "not rerun after these two corrections; prior hardware results apply to 9ee20aae helper"
+  }
+}
